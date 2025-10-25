@@ -48,6 +48,8 @@ MAX_WAV_DURATION_SECONDS = 3600.0
 MAX_WAV_SIZE_BYTES = 100 * 1024 * 1024
 AUDIO_SEGMENT_SECONDS = 1800.0
 WAV_FRAME_CHUNK_SIZE = 32_768
+ESTIMATED_TOKENS_PER_SECOND = 4.0
+PROGRESS_BAR_WIDTH = 30
 
 
 SUMMARY_PROMPT = '''
@@ -56,6 +58,7 @@ SUMMARY_PROMPT = '''
 你需要完成如下任务：
 1. 如果原始是youtube资源或播客音频资源，要保留视频或音频中的时间线，可以大概没5分钟或将一个主题合并成一段。将非中文字幕，先翻译成中文，千万不要省略或遗漏任何信息，仅可以删掉一些无意义的口语表达，比如uh、yeah等。
 2. 如果内容很长，可以先给出Abstract和Keypoints，同时根据“主题”做分段，每段的标题即为提取的“主题”，每段最好不要超过300字。如果是多人对话，每段以`说话人`的姓名开始，按不同的`说话人`分段。
+3. 将你认为重要的、insightful、非共识的内容markdown加粗标识，以便阅读，但加粗内容不宜太多。
 
 
 注意：
@@ -453,6 +456,32 @@ def perform_azure_diarization(
             "音频缓存文件不存在或生成失败，请确认 ffmpeg 可用。"
         )
 
+    segment_durations: List[float] = []
+    for path in segment_paths:
+        duration = max(_get_wav_duration(path), 0.0)
+        if duration <= 0.0:
+            try:
+                file_size = os.path.getsize(path)
+            except OSError:
+                file_size = 0
+            if file_size > 0:
+                duration = file_size / 32_000.0
+        if duration <= 0.0:
+            duration = 1.0
+        segment_durations.append(duration)
+
+    total_audio_duration = sum(segment_durations)
+    if total_audio_duration <= 0.0:
+        total_audio_duration = float(len(segment_paths))
+
+    total_estimated_tokens = _estimate_total_tokens(
+        segment_paths, segment_durations
+    )
+    processed_duration = 0.0
+    produced_tokens = 0.0
+    segments_done = 0
+    total_segments = len(segment_paths)
+
     client = AzureOpenAI(
         api_key=azure_key,
         api_version=azure_api_version,
@@ -484,11 +513,29 @@ def perform_azure_diarization(
             if stripped not in request_known_names:
                 request_known_names.append(stripped)
 
+    if total_segments > 0:
+        _update_progress_bar(
+            0.0,
+            _format_progress_detail(
+                processed_duration,
+                total_audio_duration,
+                produced_tokens,
+                total_estimated_tokens,
+                segments_done,
+                total_segments,
+            ),
+        )
+
     aggregated_diarization: List[MutableMapping[str, float | str]] = []
     aggregated_transcript: List[MutableMapping[str, float | str]] = []
     segment_offset = 0.0
 
     for index, segment_path in enumerate(segment_paths, start=1):
+        segment_duration = (
+            segment_durations[index - 1]
+            if 0 <= index - 1 < len(segment_durations)
+            else 0.0
+        )
         try:
             with open(segment_path, "rb") as audio_file:
                 request_kwargs: MutableMapping[str, Any] = {
@@ -530,6 +577,29 @@ def perform_azure_diarization(
                     for item in transcript_segments
                 ]
             else:
+                processed_duration = min(
+                    total_audio_duration, processed_duration + max(segment_duration, 0.0)
+                )
+                segments_done += 1
+                ratio = _compute_progress_ratio(
+                    processed_duration,
+                    total_audio_duration,
+                    produced_tokens,
+                    total_estimated_tokens,
+                    segments_done,
+                    total_segments,
+                )
+                _update_progress_bar(
+                    ratio,
+                    _format_progress_detail(
+                        processed_duration,
+                        total_audio_duration,
+                        produced_tokens,
+                        total_estimated_tokens,
+                        segments_done,
+                        total_segments,
+                    ),
+                )
                 continue
 
         diarization_with_offset = _offset_segments(diarization_segments, segment_offset)
@@ -538,12 +608,61 @@ def perform_azure_diarization(
         aggregated_diarization.extend(diarization_with_offset)
         aggregated_transcript.extend(transcript_with_offset)
 
-        segment_duration = _get_wav_duration(segment_path)
         max_end = _max_segment_end(diarization_with_offset, transcript_with_offset)
+        if segment_duration <= 0.0:
+            segment_duration = max(_get_wav_duration(segment_path), 0.0)
         if segment_duration > 0:
             segment_offset = max(segment_offset + segment_duration, max_end)
         else:
             segment_offset = max(segment_offset, max_end)
+
+        processed_duration = min(
+            total_audio_duration, processed_duration + max(segment_duration, 0.0)
+        )
+        produced_tokens += _estimate_tokens_from_transcript(transcript_segments)
+        segments_done += 1
+
+        ratio = _compute_progress_ratio(
+            processed_duration,
+            total_audio_duration,
+            produced_tokens,
+            total_estimated_tokens,
+            segments_done,
+            total_segments,
+        )
+        _update_progress_bar(
+            ratio,
+            _format_progress_detail(
+                processed_duration,
+                total_audio_duration,
+                produced_tokens,
+                total_estimated_tokens,
+                segments_done,
+                total_segments,
+            ),
+        )
+
+    if total_segments > 0:
+        final_ratio = _compute_progress_ratio(
+            processed_duration,
+            total_audio_duration,
+            produced_tokens,
+            total_estimated_tokens,
+            segments_done,
+            total_segments,
+        )
+        if final_ratio < 1.0:
+            _update_progress_bar(
+                1.0,
+                _format_progress_detail(
+                    total_audio_duration,
+                    total_audio_duration,
+                    max(produced_tokens, total_estimated_tokens),
+                    total_estimated_tokens,
+                    total_segments,
+                    total_segments,
+                ),
+            )
 
     if not aggregated_diarization:
         if aggregated_transcript:
@@ -1302,6 +1421,111 @@ def _get_wav_duration(wav_path: str) -> float:
         return 0.0
 
     return frames / float(frame_rate)
+
+
+def _estimate_total_tokens(
+    segment_paths: Sequence[str],
+    durations: Optional[Sequence[float]] = None,
+) -> float:
+    """Estimate expected tokens based on segment durations."""
+
+    total_tokens = 0.0
+    for index, path in enumerate(segment_paths):
+        if durations is not None and index < len(durations):
+            duration = durations[index]
+        else:
+            duration = max(_get_wav_duration(path), 0.0)
+            if duration <= 0.0:
+                try:
+                    file_size = os.path.getsize(path)
+                except OSError:
+                    file_size = 0
+                if file_size > 0:
+                    duration = file_size / 32_000.0
+        total_tokens += max(duration, 0.0) * ESTIMATED_TOKENS_PER_SECOND
+    return max(total_tokens, 1.0)
+
+
+def _estimate_tokens_from_transcript(
+    segments: Iterable[MutableMapping[str, float | str]]
+) -> float:
+    """Approximate token count from transcript segments."""
+
+    total_chars = 0
+    segment_count = 0
+    for segment in segments:
+        text = segment.get("text", "")
+        if isinstance(text, str):
+            total_chars += len(text)
+        segment_count += 1
+    if total_chars == 0 and segment_count == 0:
+        return 0.0
+    if total_chars == 0:
+        total_chars = segment_count * 16
+    return max(total_chars / 4.0, float(segment_count))
+
+
+def _update_progress_bar(ratio: float, detail: str) -> None:
+    """Render a simple textual progress bar to stdout."""
+
+    ratio = min(max(ratio, 0.0), 1.0)
+    filled = int(PROGRESS_BAR_WIDTH * ratio)
+    bar = "#" * filled + "-" * (PROGRESS_BAR_WIDTH - filled)
+    sys.stdout.write(
+        f"\r[{bar}] {ratio * 100:5.1f}% {detail[:80]}"
+    )
+    sys.stdout.flush()
+    if ratio >= 1.0:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+def _compute_progress_ratio(
+    processed_duration: float,
+    total_duration: float,
+    produced_tokens: float,
+    total_tokens: float,
+    segments_done: int,
+    total_segments: int,
+) -> float:
+    """Combine duration、token与片段比值，得到整体进度。"""
+
+    if total_duration <= 0:
+        duration_ratio = 0.0
+    else:
+        duration_ratio = min(max(processed_duration / total_duration, 0.0), 1.0)
+
+    if total_tokens <= 0:
+        token_ratio = duration_ratio
+    else:
+        token_ratio = min(max(produced_tokens / total_tokens, 0.0), 1.0)
+
+    if total_segments <= 0:
+        segment_ratio = duration_ratio
+    else:
+        segment_ratio = min(max(segments_done / total_segments, 0.0), 1.0)
+
+    combined = 0.5 * duration_ratio + 0.3 * token_ratio + 0.2 * segment_ratio
+    return min(max(combined, 0.0), 1.0)
+
+
+def _format_progress_detail(
+    processed_duration: float,
+    total_duration: float,
+    produced_tokens: float,
+    total_tokens: float,
+    segments_done: int,
+    total_segments: int,
+) -> str:
+    """Return user-friendly progress detail string."""
+
+    total_minutes = total_duration / 60.0 if total_duration > 0 else 0.0
+    processed_minutes = processed_duration / 60.0
+    return (
+        f"Azure diarization {segments_done}/{total_segments} "
+        f"{processed_minutes:.1f}m/{total_minutes:.1f}m "
+        f"tokens≈{int(produced_tokens)}/{int(max(total_tokens, 1.0))}"
+    )
 
 
 def _offset_segments(

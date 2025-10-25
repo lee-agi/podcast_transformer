@@ -264,6 +264,11 @@ def test_perform_azure_diarization_offsets_segments_when_split(
             "diarization": {"segments": [segment]},
         }
 
+    progress_updates: List[tuple[float, str]] = []
+
+    def fake_progress(ratio: float, detail: str) -> None:
+        progress_updates.append((ratio, detail))
+
     class FakeTranscriptions:
         def __init__(self) -> None:
             self.create = fake_create
@@ -283,6 +288,7 @@ def test_perform_azure_diarization_offsets_segments_when_split(
         cli, "_diarization_cache_path", lambda directory: str(cache_file)
     )
     monkeypatch.setattr(cli, "_load_cached_diarization", lambda _: None)
+    monkeypatch.setattr(cli, "_update_progress_bar", fake_progress)
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
 
     result = cli.perform_azure_diarization("https://youtu.be/example", "en")
@@ -295,6 +301,10 @@ def test_perform_azure_diarization_offsets_segments_when_split(
     assert transcript[0]["text"] == "chunk-1"
     assert transcript[1]["text"] == "chunk-2"
     assert transcript[1]["start"] > transcript[0]["end"]
+    assert progress_updates, "progress updates should be recorded"
+    assert pytest.approx(progress_updates[0][0], rel=1e-4) == 0.0
+    assert progress_updates[-1][0] == pytest.approx(1.0, rel=1e-3)
+    assert all(0.0 <= ratio <= 1.0 for ratio, _ in progress_updates)
 
 
 def test_perform_azure_diarization_uses_cached_payload(
