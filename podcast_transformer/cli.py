@@ -564,6 +564,7 @@ def perform_azure_diarization(
         )
 
     aggregated_diarization.sort(key=lambda item: item["start"])
+    aggregated_transcript.sort(key=lambda item: item.get("start", 0.0))
     transcript_segments = aggregated_transcript
     diarization_segments = aggregated_diarization
     merged_entries: List[MutableMapping[str, float | str]] = []
@@ -784,7 +785,9 @@ def _normalize_segment_entry(
 ) -> Optional[MutableMapping[str, float | str]]:
     """Normalize a diarization segment into start/end/speaker fields."""
 
-    raw_start = segment.get("start") or segment.get("offset")
+    raw_start = segment.get("start")
+    if raw_start is None:
+        raw_start = segment.get("offset")
     raw_end = segment.get("end")
     raw_duration = segment.get("duration")
 
@@ -826,7 +829,9 @@ def _normalize_transcript_entry(
     if not isinstance(text, str) or not text.strip():
         return None
 
-    raw_start = segment.get("start") or segment.get("offset")
+    raw_start = segment.get("start")
+    if raw_start is None:
+        raw_start = segment.get("offset")
     raw_end = segment.get("end")
     raw_duration = segment.get("duration")
 

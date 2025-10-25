@@ -7,6 +7,7 @@
 - 基于 `youtube-transcript-api` 获取时间戳精确到秒的字幕段。
 - 使用 `yt_dlp` + `ffmpeg` 下载并转换音频，并提交至 Azure OpenAI 语音转写接口。
 - 内置 Android 客户端回退逻辑，即使未配置 cookie 也能规避常见的 403 Forbidden 下载失败。
+- 自动检测超长或超大音频并切分成多个片段，逐段提交 Azure，避免单次上传超过限制。
 - 通过 `gpt-4o-transcribe-diarize` 返回的说话人分段信息，将不同说话人合并入字幕。
 - 可选调用 Azure GPT-5，根据定制 system prompt 翻译与总结 ASR 片段。
 - 自动加载工作目录或 `PODCAST_TRANSFORMER_DOTENV` 指向的 `.env` 文件，简化凭据管理。
@@ -95,6 +96,8 @@ cp .env.example .env
 若希望辅助识别特定说话人，可附加 `--known-speaker 名称=音频路径` 选项（可多次指定），工具会自动将参照音频转为数据 URL 并传递给 Azure OpenAI。若仅有姓名提示，可使用 `--known-speaker-name 姓名` 多次指定（例如 `--known-speaker-name Alice --known-speaker-name Bob`），脚本会将所有姓名通过 `known_speaker_names` 参数直接发送给 Azure 接口，以提升说话人标签的准确率。
 
 当 `yt_dlp` 遭遇无 cookie 时的 403 Forbidden，CLI 会自动改用 Android 客户端参数重新发起下载，并切换到移动端 User-Agent，以提升公开视频的成功率。
+
+当生成的 WAV 超过约 60 分钟或 100MB 时，CLI 会在缓存目录下自动生成 `audio_partXXX.wav` 片段并依序调用 Azure，从而绕过 `Audio file might be corrupted or unsupported` 等超限报错。
 
 当缓存文件异常或想强制重新下载音频时，可追加 `--clean-cache` 选项，脚本会在调用任何外部服务前删除当前 URL 的缓存目录。
 
