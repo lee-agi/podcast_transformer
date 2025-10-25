@@ -6,10 +6,12 @@
 
 - 基于 `youtube-transcript-api` 获取时间戳精确到秒的字幕段。
 - 使用 `yt_dlp` + `ffmpeg` 下载并转换音频，并提交至 Azure OpenAI 语音转写接口。
+- 支持 B 站等多站点视频音频提取，按照 URL 主机自动设置 Referer 与缓存目录结构。
 - 内置 Android 客户端回退逻辑，即使未配置 cookie 也能规避常见的 403 Forbidden 下载失败。
 - 自动检测超长或超大音频并切分成多个片段，逐段提交 Azure，并输出实时进度条预估处理完成度。
 - 通过 `gpt-4o-transcribe-diarize` 返回的说话人分段信息，将不同说话人合并入字幕。
 - 可选调用 Azure GPT-5，根据定制 system prompt 翻译与总结 ASR 片段。
+- 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
 - 自动加载工作目录或 `PODCAST_TRANSFORMER_DOTENV` 指向的 `.env` 文件，简化凭据管理。
 - 提供 `--clean-cache` 与 `--check-cache` 选项，方便排查与清理缓存。
 - 命令行输出 JSON，可通过 `--pretty` 选项进行格式化。
@@ -97,7 +99,9 @@ cp .env.example .env
 
 当 `yt_dlp` 遭遇无 cookie 时的 403 Forbidden，CLI 会自动改用 Android 客户端参数重新发起下载，并切换到移动端 User-Agent，以提升公开视频的成功率。
 
-当生成的 WAV 超过约 60 分钟或 100MB 时，CLI 会在缓存目录下自动生成 `audio_partXXX.wav` 片段并依序调用 Azure，从而绕过 `Audio file might be corrupted or unsupported` 等超限报错；处理过程中会根据音频总时长和已生成的文本估算进度，并以进度条形式实时展示。
+> 提示：非 YouTube URL 暂不具备内建字幕获取能力，若需转写请启用 `--azure-diarization` 以调用 Azure OpenAI。
+
+当生成的 WAV 超过约 60 分钟或 100MB 时，CLI 会在缓存目录下自动生成 `audio_partXXX.wav` 片段并依序调用 Azure，从而绕过 `Audio file might be corrupted or unsupported` 等超限报错。
 
 当缓存文件异常或想强制重新下载音频时，可追加 `--clean-cache` 选项，脚本会在调用任何外部服务前删除当前 URL 的缓存目录。
 
@@ -109,7 +113,7 @@ cp .env.example .env
 
 命令会输出缓存路径、存在的文件列表以及 `audio.wav` 是否存在。
 
-音频文件与转换后的 WAV 会缓存于 `~/.cache/podcast_transformer/<video_id>/`（或通过设置 `PODCAST_TRANSFORMER_CACHE_DIR` 自定义位置），重复执行时将复用缓存，避免再次下载。
+音频文件与转换后的 WAV 会缓存于 `~/.cache/podcast_transformer/<video_id>/`（或通过设置 `PODCAST_TRANSFORMER_CACHE_DIR` 自定义位置）；对于非 YouTube 站点，会在缓存目录中包含域名与 URL 哈希前缀，重复执行时同样复用缓存，避免再次下载。
 
 > 注意：部分视频仅提供其他语言字幕，脚本会尝试自动翻译为 `--language` 指定的语言；如仍无法获取，请使用 `--fallback-language` 指明可用的字幕语言代码（可在报错信息中查看）。
 
@@ -129,6 +133,7 @@ cp .env.example .env
 - 始终保留原始时间线；若原文非中文，先翻译成中文。
 - 长内容会包含 `Abstract`、`Keypoints` 与按主题分段的正文，每段不超过约 300 字。
 - 多人对话按说话人分段，保持第一人称述说；专业名词可带原文注释。
+- 同时会在对应视频缓存目录（例如 `~/.cache/podcast_transformer/youtube/<video_id>/summary.md`）写入一份结构化 Markdown 文件，含封面标题、目录与时间轴表格；CLI 输出会额外返回 `summary_path` 方便调用方读取该文件。
 
 若需调整文案风格，可通过 `AZURE_OPENAI_SUMMARY_DEPLOYMENT` 更换部署，或在调用 `generate_translation_summary` 时传入自定义 prompt。
 

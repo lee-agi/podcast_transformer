@@ -59,7 +59,9 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
 
     summary = cli.generate_translation_summary(segments)
 
-    assert summary == "翻译摘要"
+    assert summary.startswith("# ")
+    assert "## 时间轴" in summary
+    assert "翻译摘要" in summary
     assert captured["model"] == "llab-gpt-5"
     messages = captured["messages"]
     assert isinstance(messages, list)
@@ -71,18 +73,30 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
 
 
 def test_run_with_azure_summary_outputs_summary(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     segments = [
         {"start": 0.0, "end": 1.0, "text": "Hello", "speaker": "Speaker 1"}
     ]
+
+    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
 
     monkeypatch.setattr(
         cli,
         "fetch_transcript_with_metadata",
         lambda *args, **kwargs: [dict(segment) for segment in segments],
     )
-    monkeypatch.setattr(cli, "generate_translation_summary", lambda _: "总结内容")
+    fake_markdown = (
+        "# 封面\n\n"
+        "## 时间轴\n"
+        "| 序号 | 起始 | 结束 | 时长 | 说话人 | 文本 |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| 1 | 00:00:00.000 | 00:00:01.000 | 00:00:01.000 | Speaker 1 | Hello |"
+    )
+
+    monkeypatch.setattr(cli, "generate_translation_summary", lambda _segments: fake_markdown)
 
     exit_code = cli.run([
         "--url",
@@ -93,5 +107,11 @@ def test_run_with_azure_summary_outputs_summary(
     assert exit_code == 0
     output = capsys.readouterr().out.strip()
     data = json.loads(output)
-    assert data["summary"] == "总结内容"
+    assert data["summary"] == fake_markdown
     assert data["segments"][0]["text"] == "Hello"
+    summary_path = data.get("summary_path")
+    assert summary_path
+
+    path_obj = Path(summary_path)
+    assert path_obj.exists()
+    assert path_obj.read_text(encoding="utf-8") == fake_markdown
