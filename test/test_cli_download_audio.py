@@ -163,3 +163,54 @@ def test_download_audio_stream_android_fallback(
     fallback_headers = second_opts.get("http_headers")
     assert fallback_headers is not None
     assert "Android" in fallback_headers.get("User-Agent", "")
+
+
+def test_download_audio_stream_non_youtube_headers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """非 YouTube 站点应保持原始域名 Referer。"""
+
+    target_url = "https://www.bilibili.com/video/BV1xx411c7mD"
+
+    class RecorderYoutubeDL:
+        last_options: dict[str, Any] | None = None
+
+        def __init__(self, options: Dict[str, Any]):
+            RecorderYoutubeDL.last_options = options
+            self._options = options
+
+        def __enter__(self) -> RecorderYoutubeDL:
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool) -> Dict[str, Any]:
+            assert url == target_url
+            assert download is True
+            return {"id": "bv1", "title": "demo", "ext": "mp3"}
+
+        def prepare_filename(self, info: Dict[str, Any]) -> str:
+            path = self._options["outtmpl"].replace("%(ext)s", info.get("ext", "mp3"))
+            Path(path).write_bytes(b"data")
+            return path
+
+    fake_module = ModuleType("yt_dlp")
+    fake_module.YoutubeDL = RecorderYoutubeDL  # type: ignore[attr-defined]
+    utils_module = ModuleType("yt_dlp.utils")
+    utils_module.DownloadError = FakeDownloadError  # type: ignore[attr-defined]
+    utils_module.std_headers = {}
+    fake_module.utils = utils_module  # type: ignore[attr-defined]
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake_module)
+    monkeypatch.setitem(sys.modules, "yt_dlp.utils", utils_module)
+
+    result = cli.download_audio_stream(target_url, str(tmp_path))
+
+    assert result == os.path.join(tmp_path, "audio.mp3")
+
+    options = RecorderYoutubeDL.last_options
+    assert options is not None
+    headers = options.get("http_headers")
+    assert isinstance(headers, dict)
+    assert headers.get("Referer") == "https://www.bilibili.com/"

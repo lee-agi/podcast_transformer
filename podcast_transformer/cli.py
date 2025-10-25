@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import wave
+from datetime import datetime
 from collections import defaultdict
 from typing import (
     Any,
@@ -30,7 +32,7 @@ from typing import (
     Tuple,
     Union,
 )
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import ParseResult, parse_qs, urlparse
 
 
 DEFAULT_YTDLP_USER_AGENT = (
@@ -256,8 +258,10 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     )
 
     summary_text: Optional[str] = None
+    summary_path: Optional[str] = None
     if args.azure_summary:
         summary_text = generate_translation_summary(merged_segments)
+        summary_path = _write_summary_markdown(args.url, summary_text)
 
     payload: Union[List[MutableMapping[str, float | str]], MutableMapping[str, Any]]
     if summary_text is not None:
@@ -265,6 +269,8 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             "segments": merged_segments,
             "summary": summary_text,
         }
+        if summary_path is not None:
+            payload["summary_path"] = summary_path
     else:
         payload = merged_segments
 
@@ -995,7 +1001,8 @@ def generate_translation_summary(
         max_completion_tokens=16384,
     )
 
-    return _extract_summary_text(response)
+    raw_summary = _extract_summary_text(response)
+    return _compose_summary_markdown(segments, raw_summary)
 
 
 def _format_segments_for_summary(
@@ -1025,6 +1032,88 @@ def _format_segments_for_summary(
     return "\n".join(lines)
 
 
+def _compose_summary_markdown(
+    segments: Sequence[MutableMapping[str, Any]], raw_summary: str
+) -> str:
+    if not raw_summary or not raw_summary.strip():
+        raise RuntimeError("Azure GPT-5 摘要结果为空。")
+
+    sorted_segments = sorted(
+        (dict(segment) for segment in segments),
+        key=lambda item: float(item.get("start", 0.0)),
+    )
+
+    generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
+    segment_count = len(sorted_segments)
+    if sorted_segments:
+        starts = [float(item.get("start", 0.0)) for item in sorted_segments]
+        ends = [float(item.get("end", item.get("start", 0.0))) for item in sorted_segments]
+        earliest = min(starts)
+        latest = max(ends)
+        total_duration = max(0.0, latest - earliest)
+    else:
+        total_duration = 0.0
+
+    formatted_duration = _format_timestamp(total_duration)
+    speakers = sorted(
+        {
+            str(item.get("speaker", "")).strip()
+            for item in sorted_segments
+            if str(item.get("speaker", "")).strip()
+        }
+    )
+
+    lines: List[str] = []
+    lines.append("# Podcast Transformer 摘要报告")
+    lines.append("")
+    lines.append("## 封面")
+    lines.append(f"- 生成时间：{generated_at}")
+    lines.append(f"- 有效片段数：{segment_count}")
+    lines.append(f"- 覆盖时长：{formatted_duration}")
+    if speakers:
+        lines.append(f"- 识别说话人：{', '.join(speakers)}")
+
+    lines.append("")
+    lines.append("## 目录")
+    lines.append("- [封面](#封面)")
+    lines.append("- [模型总结](#模型总结)")
+    lines.append("- [时间轴](#时间轴)")
+
+    lines.append("")
+    lines.append("## 模型总结")
+    lines.append(raw_summary.strip())
+
+    lines.append("")
+    lines.append("## 时间轴")
+    lines.append("| 序号 | 起始 | 结束 | 时长 | 说话人 | 文本 |")
+    lines.append("| --- | --- | --- | --- | --- | --- |")
+
+    for index, segment in enumerate(sorted_segments, start=1):
+        start_seconds = float(segment.get("start", 0.0))
+        end_seconds = float(segment.get("end", start_seconds))
+        duration_seconds = max(0.0, end_seconds - start_seconds)
+        speaker = str(segment.get("speaker", "")).strip() or "-"
+        text = str(segment.get("text", ""))
+        cell_text = _sanitize_markdown_cell(text)
+        lines.append(
+            "| {idx} | {start} | {end} | {duration} | {speaker} | {text} |".format(
+                idx=index,
+                start=_format_timestamp(start_seconds),
+                end=_format_timestamp(end_seconds),
+                duration=_format_timestamp(duration_seconds),
+                speaker=_sanitize_markdown_cell(speaker),
+                text=cell_text,
+            )
+        )
+
+    return "\n".join(lines)
+
+
+def _sanitize_markdown_cell(value: str) -> str:
+    sanitized = value.replace("|", "\\|").replace("\n", " ").strip()
+    return sanitized or "-"
+
+
 def _extract_summary_text(response: object) -> str:
     """Extract summary content from Azure chat completion response."""
 
@@ -1052,6 +1141,20 @@ def _extract_summary_text(response: object) -> str:
         return content.strip()
 
     raise RuntimeError("Azure GPT-5 摘要结果为空。")
+
+
+def _write_summary_markdown(video_url: str, content: str) -> str:
+    if not content or not content.strip():
+        raise RuntimeError("无法写入空的摘要 Markdown 内容。")
+
+    directory = _resolve_video_cache_dir(video_url)
+    path = os.path.join(directory, "summary.md")
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+    except OSError as exc:  # pragma: no cover - filesystem failure
+        raise RuntimeError(f"写入摘要 Markdown 文件失败：{path}") from exc
+    return path
 
 
 def _format_timestamp(value: Any) -> str:
@@ -1129,9 +1232,18 @@ def _parse_known_speakers(
 def _resolve_video_cache_dir(video_url: str) -> str:
     """Resolve the cache directory for a given video URL."""
 
+    parsed_url = urlparse(video_url)
+    hostname = (parsed_url.hostname or "unknown-host").lower()
+    host_segment = hostname.replace(".", "_") or "unknown-host"
+
     video_id = extract_video_id(video_url)
-    if not video_id:
-        raise RuntimeError(f"Unable to determine video id for caching: {video_url}")
+    if video_id:
+        cache_key = os.path.join("youtube", video_id)
+    else:
+        hasher = hashlib.sha256()
+        hasher.update(video_url.strip().encode("utf-8"))
+        digest = hasher.hexdigest()[:16]
+        cache_key = os.path.join(host_segment, digest)
 
     base_dir = os.getenv("PODCAST_TRANSFORMER_CACHE_DIR")
     if base_dir:
@@ -1140,7 +1252,7 @@ def _resolve_video_cache_dir(video_url: str) -> str:
         home_dir = os.path.expanduser("~")
         cache_base = os.path.join(home_dir, ".cache", "podcast_transformer")
 
-    video_dir = os.path.join(cache_base, video_id)
+    video_dir = os.path.join(cache_base, cache_key)
     os.makedirs(video_dir, exist_ok=True)
     return video_dir
 
@@ -1335,6 +1447,26 @@ def _max_segment_end(
     return max_end
 
 
+def _is_youtube_hostname(hostname: str) -> bool:
+    if not hostname:
+        return False
+    if hostname in {"youtu.be", "youtube.com"}:
+        return True
+    if hostname.endswith(".youtube.com"):
+        return True
+    return hostname == "www.youtube.com"
+
+
+def _default_referer_for_url(parsed: ParseResult, is_youtube: bool) -> str:
+    if is_youtube:
+        return "https://www.youtube.com/"
+    scheme = parsed.scheme or "https"
+    hostname = parsed.hostname or ""
+    if hostname:
+        return f"{scheme}://{hostname}/"
+    return parsed.geturl() or "https://www.youtube.com/"
+
+
 def download_audio_stream(video_url: str, directory: str) -> str:
     """Download the best available audio stream using yt_dlp."""
 
@@ -1349,6 +1481,10 @@ def download_audio_stream(video_url: str, directory: str) -> str:
     os.makedirs(directory, exist_ok=True)
 
     user_agent = os.getenv("PODCAST_TRANSFORMER_YTDLP_UA", DEFAULT_YTDLP_USER_AGENT)
+    parsed_url = urlparse(video_url)
+    hostname = (parsed_url.hostname or "").lower()
+    is_youtube = _is_youtube_hostname(hostname)
+    referer = _default_referer_for_url(parsed_url, is_youtube)
 
     try:
         from yt_dlp.utils import std_headers  # type: ignore[import-error]
@@ -1358,7 +1494,7 @@ def download_audio_stream(video_url: str, directory: str) -> str:
     http_headers: MutableMapping[str, str] = dict(std_headers or {})
     http_headers["User-Agent"] = user_agent
     http_headers.setdefault("Accept-Language", "en-US,en;q=0.9")
-    http_headers.setdefault("Referer", "https://www.youtube.com/")
+    http_headers.setdefault("Referer", referer)
 
     ydl_opts: Dict[str, Any] = {
         "format": "bestaudio/best",
@@ -1382,7 +1518,7 @@ def download_audio_stream(video_url: str, directory: str) -> str:
     try:
         audio_path = _download_with_ytdlp(yt_dlp, video_url, ydl_opts)
     except DownloadError as exc:  # pragma: no cover - depends on network
-        if _should_try_android_fallback(exc, ydl_opts.get("cookiefile")):
+        if is_youtube and _should_try_android_fallback(exc, ydl_opts.get("cookiefile")):
             fallback_opts = _build_android_fallback_options(ydl_opts)
             try:
                 audio_path = _download_with_ytdlp(yt_dlp, video_url, fallback_opts)

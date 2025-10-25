@@ -129,8 +129,8 @@ def test_prepare_audio_uses_cache(monkeypatch, tmp_path):
     video_id = cli.extract_video_id(video_url)
     assert video_id is not None
 
-    video_dir = cache_dir / video_id
-    video_dir.mkdir()
+    video_dir = cache_dir / "youtube" / video_id
+    video_dir.mkdir(parents=True)
     wav_path = video_dir / "audio.wav"
     wav_path.write_bytes(b"fake-audio")
 
@@ -154,6 +154,19 @@ def test_prepare_audio_uses_cache(monkeypatch, tmp_path):
     assert cached_path == str(wav_path)
     assert not download_called
     assert not convert_called
+
+
+def test_resolve_video_cache_dir_non_youtube(monkeypatch, tmp_path):
+    """非 YouTube URL 应使用稳定哈希目录。"""
+
+    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+
+    url = "https://www.bilibili.com/video/BV1xx411c7mD?p=2"
+    cache_dir = cli._resolve_video_cache_dir(url)
+
+    assert cache_dir.startswith(str(tmp_path))
+    assert "bilibili" in cache_dir
+    assert os.path.isdir(cache_dir)
 
 
 def test_build_extra_body(tmp_path):
