@@ -10,6 +10,7 @@
 - 内置 Android 客户端回退逻辑，即使未配置 cookie 也能规避常见的 403 Forbidden 下载失败。
 - 自动检测超长（超过 Azure 1,500 秒限制）或超大音频并切分成多个片段，逐段提交 Azure，避免单次上传超过限制。
 - 通过 `gpt-4o-transcribe-diarize` 返回的说话人分段信息，将不同说话人合并入字幕。
+- 当 Azure 暂未返回说话人分段时，会退回空说话人列表并继续使用已有字幕，避免 CLI 直接失败。
 - 可选调用 Azure GPT-5，根据定制 system prompt 翻译与总结 ASR 片段。
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
 - 自动加载工作目录或 `PODCAST_TRANSFORMER_DOTENV` 指向的 `.env` 文件，简化凭据管理。
@@ -101,7 +102,7 @@ cp .env.example .env
 
 > 提示：非 YouTube URL 暂不具备内建字幕获取能力，若需转写请启用 `--azure-diarization` 以调用 Azure OpenAI。
 
-当生成的 WAV 超过约 25 分钟（1,500 秒）或 100MB 时，CLI 会在缓存目录下自动生成不超过约 23 分钟的 `audio_partXXX.wav` 片段并依序调用 Azure，从而绕过 `audio duration ... is longer than 1500 seconds` 等超限报错；若缓存中仍存在旧的超长片段，工具会自动清理并重新切分。
+当生成的 WAV 超过约 25 分钟（1,500 秒）或 100MB 时，CLI 会在缓存目录下自动生成不超过约 23 分钟的 `audio_partXXX.wav` 片段并依序调用 Azure，从而绕过 `audio duration ... is longer than 1500 seconds` 等超限报错；若缓存中仍存在旧的超长片段，工具会自动清理并重新切分。若 Azure 返回空的说话人/转写结果，CLI 会回退为空列表并继续后续流程，可结合原始字幕输出完成后续摘要或导出。
 
 当缓存文件异常或想强制重新下载音频时，可追加 `--clean-cache` 选项，脚本会在调用任何外部服务前删除当前 URL 的缓存目录。
 

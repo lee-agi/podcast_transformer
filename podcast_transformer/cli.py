@@ -698,7 +698,12 @@ def perform_azure_diarization(
                 for item in aggregated_transcript
             ]
         else:
-            raise RuntimeError("Azure OpenAI 未返回说话人分段信息。")
+            empty_payload: MutableMapping[str, Any] = {
+                "speakers": [],
+                "transcript": [],
+            }
+            _write_diarization_cache(cache_path, empty_payload)
+            return empty_payload
 
     if max_speakers and max_speakers > 0:
         aggregated_diarization = _limit_speaker_count(
