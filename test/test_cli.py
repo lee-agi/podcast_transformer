@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from pathlib import Path
 from typing import List
 
 import pytest
@@ -254,8 +255,7 @@ def test_cli_check_cache_reports_status(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(cache_root))
 
     url = "https://youtu.be/check"
-    video_dir = cache_root / "check"
-    video_dir.mkdir()
+    video_dir = Path(cli._resolve_video_cache_dir(url))
     audio_path = video_dir / "audio.wav"
     audio_path.write_bytes(b"audio")
 

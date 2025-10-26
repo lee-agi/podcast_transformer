@@ -12,7 +12,9 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -52,6 +54,7 @@ AUDIO_SEGMENT_SECONDS = 1800.0
 WAV_FRAME_CHUNK_SIZE = 32_768
 ESTIMATED_TOKENS_PER_SECOND = 4.0
 PROGRESS_BAR_WIDTH = 30
+READING_WORDS_PER_MINUTE = 300
 
 
 SUMMARY_PROMPT = '''
@@ -260,20 +263,32 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         transcript_segments, diarization_segments
     )
 
-    summary_text: Optional[str] = None
-    summary_path: Optional[str] = None
+    summary_bundle: Optional[MutableMapping[str, Any]] = None
+    summary_paths: Optional[Mapping[str, str]] = None
     if args.azure_summary:
-        summary_text = generate_translation_summary(merged_segments)
-        summary_path = _write_summary_markdown(args.url, summary_text)
+        summary_bundle = generate_translation_summary(merged_segments, args.url)
+        summary_paths = _write_summary_documents(
+            args.url,
+            summary_bundle.get("summary_markdown", ""),
+            summary_bundle.get("timeline_markdown", ""),
+        )
 
     payload: Union[List[MutableMapping[str, float | str]], MutableMapping[str, Any]]
-    if summary_text is not None:
+    if summary_bundle is not None:
         payload = {
             "segments": merged_segments,
-            "summary": summary_text,
+            "summary": summary_bundle.get("summary_markdown"),
+            "timeline": summary_bundle.get("timeline_markdown"),
+            "summary_metadata": summary_bundle.get("metadata"),
         }
-        if summary_path is not None:
-            payload["summary_path"] = summary_path
+        if summary_paths is not None:
+            payload["summary_path"] = summary_paths.get("summary")
+            payload["timeline_path"] = summary_paths.get("timeline")
+            payload["summary_paths"] = summary_paths
+        if "total_words" in summary_bundle:
+            payload["total_words"] = summary_bundle["total_words"]
+        if "estimated_minutes" in summary_bundle:
+            payload["estimated_minutes"] = summary_bundle["estimated_minutes"]
     else:
         payload = merged_segments
 
@@ -1075,8 +1090,9 @@ def _extract_openai_error_message(exc: Exception) -> str:
 
 def generate_translation_summary(
     segments: Sequence[MutableMapping[str, Any]],
+    video_url: str,
     prompt: Optional[str] = None,
-) -> str:
+) -> MutableMapping[str, Any]:
     """Call Azure GPT-5 to translate and summarize ASR segments."""
 
     if not segments:
@@ -1121,7 +1137,8 @@ def generate_translation_summary(
     )
 
     raw_summary = _extract_summary_text(response)
-    return _compose_summary_markdown(segments, raw_summary)
+    video_metadata = _fetch_video_metadata(video_url)
+    return _compose_summary_documents(segments, raw_summary, video_metadata, video_url)
 
 
 def _format_segments_for_summary(
@@ -1151,9 +1168,12 @@ def _format_segments_for_summary(
     return "\n".join(lines)
 
 
-def _compose_summary_markdown(
-    segments: Sequence[MutableMapping[str, Any]], raw_summary: str
-) -> str:
+def _compose_summary_documents(
+    segments: Sequence[MutableMapping[str, Any]],
+    raw_summary: str,
+    video_metadata: Mapping[str, Any],
+    video_url: str,
+) -> MutableMapping[str, Any]:
     if not raw_summary or not raw_summary.strip():
         raise RuntimeError("Azure GPT-5 摘要结果为空。")
 
@@ -1163,7 +1183,6 @@ def _compose_summary_markdown(
     )
 
     generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
-    segment_count = len(sorted_segments)
     if sorted_segments:
         starts = [float(item.get("start", 0.0)) for item in sorted_segments]
         ends = [float(item.get("end", item.get("start", 0.0))) for item in sorted_segments]
@@ -1182,30 +1201,54 @@ def _compose_summary_markdown(
         }
     )
 
-    lines: List[str] = []
-    lines.append("# Podcast Transformer 摘要报告")
-    lines.append("")
-    lines.append("## 封面")
-    lines.append(f"- 生成时间：{generated_at}")
-    lines.append(f"- 有效片段数：{segment_count}")
-    lines.append(f"- 覆盖时长：{formatted_duration}")
+    title = str(video_metadata.get("title") or "未知标题").strip() or "未知标题"
+    publish_date = str(video_metadata.get("upload_date") or "")
+    if publish_date and len(publish_date) == 8 and publish_date.isdigit():
+        publish_date = f"{publish_date[0:4]}-{publish_date[4:6]}-{publish_date[6:8]}"
+    elif not publish_date:
+        publish_date = "未知日期"
+
+    source_url = str(video_metadata.get("webpage_url") or video_url)
+
+    total_words = _count_words(raw_summary)
+    estimated_minutes = max(1, math.ceil(total_words / READING_WORDS_PER_MINUTE))
+
+    summary_lines: List[str] = []
+    summary_lines.append("# Podcast Transformer 摘要报告")
+    summary_lines.append("")
+    summary_lines.append("## 封面")
+    summary_lines.append(f"- 生成时间：{generated_at}")
+    summary_lines.append(f"- 标题：{title}")
+    summary_lines.append(f"- 链接：{source_url}")
+    summary_lines.append(f"- 发布日期：{publish_date}")
+    summary_lines.append(f"- 总字数：{total_words}")
+    summary_lines.append(f"- 预估阅读时长：约 {estimated_minutes} 分钟")
+    summary_lines.append(f"- 覆盖时长：{formatted_duration}")
     if speakers:
-        lines.append(f"- 识别说话人：{', '.join(speakers)}")
+        summary_lines.append(f"- 识别说话人：{', '.join(speakers)}")
 
-    lines.append("")
-    lines.append("## 目录")
-    lines.append("- [封面](#封面)")
-    lines.append("- [模型总结](#模型总结)")
-    lines.append("- [时间轴](#时间轴)")
+    summary_lines.append("")
+    summary_lines.append("## 模型总结")
+    summary_lines.append(raw_summary.strip())
 
-    lines.append("")
-    lines.append("## 模型总结")
-    lines.append(raw_summary.strip())
+    timeline_lines: List[str] = []
+    timeline_lines.append("# Podcast Transformer 时间轴")
+    timeline_lines.append("")
+    timeline_lines.append("## 封面")
+    timeline_lines.append(f"- 生成时间：{generated_at}")
+    timeline_lines.append(f"- 标题：{title}")
+    timeline_lines.append(f"- 链接：{source_url}")
+    timeline_lines.append(f"- 发布日期：{publish_date}")
+    timeline_lines.append(f"- 总字数：{total_words}")
+    timeline_lines.append(f"- 预估阅读时长：约 {estimated_minutes} 分钟")
+    timeline_lines.append(f"- 覆盖时长：{formatted_duration}")
+    if speakers:
+        timeline_lines.append(f"- 识别说话人：{', '.join(speakers)}")
 
-    lines.append("")
-    lines.append("## 时间轴")
-    lines.append("| 序号 | 起始 | 结束 | 时长 | 说话人 | 文本 |")
-    lines.append("| --- | --- | --- | --- | --- | --- |")
+    timeline_lines.append("")
+    timeline_lines.append("## 时间轴")
+    timeline_lines.append("| 序号 | 起始 | 结束 | 时长 | 说话人 | 文本 |")
+    timeline_lines.append("| --- | --- | --- | --- | --- | --- |")
 
     for index, segment in enumerate(sorted_segments, start=1):
         start_seconds = float(segment.get("start", 0.0))
@@ -1214,7 +1257,7 @@ def _compose_summary_markdown(
         speaker = str(segment.get("speaker", "")).strip() or "-"
         text = str(segment.get("text", ""))
         cell_text = _sanitize_markdown_cell(text)
-        lines.append(
+        timeline_lines.append(
             "| {idx} | {start} | {end} | {duration} | {speaker} | {text} |".format(
                 idx=index,
                 start=_format_timestamp(start_seconds),
@@ -1225,7 +1268,24 @@ def _compose_summary_markdown(
             )
         )
 
-    return "\n".join(lines)
+    metadata = {
+        "generated_at": generated_at,
+        "title": title,
+        "url": source_url,
+        "publish_date": publish_date,
+        "total_words": total_words,
+        "estimated_minutes": estimated_minutes,
+        "duration": formatted_duration,
+        "speakers": speakers,
+    }
+
+    return {
+        "summary_markdown": "\n".join(summary_lines),
+        "timeline_markdown": "\n".join(timeline_lines),
+        "metadata": metadata,
+        "total_words": total_words,
+        "estimated_minutes": estimated_minutes,
+    }
 
 
 def _sanitize_markdown_cell(value: str) -> str:
@@ -1262,18 +1322,80 @@ def _extract_summary_text(response: object) -> str:
     raise RuntimeError("Azure GPT-5 摘要结果为空。")
 
 
-def _write_summary_markdown(video_url: str, content: str) -> str:
-    if not content or not content.strip():
+def _write_summary_documents(
+    video_url: str, summary_markdown: str, timeline_markdown: str
+) -> Mapping[str, str]:
+    if not summary_markdown or not summary_markdown.strip():
         raise RuntimeError("无法写入空的摘要 Markdown 内容。")
+    if not timeline_markdown or not timeline_markdown.strip():
+        raise RuntimeError("无法写入空的时间轴 Markdown 内容。")
 
     directory = _resolve_video_cache_dir(video_url)
-    path = os.path.join(directory, "summary.md")
+    summary_path = os.path.join(directory, "summary.md")
+    timeline_path = os.path.join(directory, "timeline.md")
+
     try:
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(content)
+        with open(summary_path, "w", encoding="utf-8") as summary_file:
+            summary_file.write(summary_markdown)
+        with open(timeline_path, "w", encoding="utf-8") as timeline_file:
+            timeline_file.write(timeline_markdown)
     except OSError as exc:  # pragma: no cover - filesystem failure
-        raise RuntimeError(f"写入摘要 Markdown 文件失败：{path}") from exc
-    return path
+        raise RuntimeError(
+            f"写入摘要/时间轴 Markdown 文件失败：{summary_path}, {timeline_path}"
+        ) from exc
+
+    return {"summary": summary_path, "timeline": timeline_path}
+
+
+def _fetch_video_metadata(video_url: str) -> Mapping[str, Any]:
+    metadata: Dict[str, Any] = {
+        "title": None,
+        "webpage_url": video_url,
+        "upload_date": "",
+    }
+
+    try:
+        import yt_dlp
+    except ModuleNotFoundError:
+        return metadata
+
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "nocheckcertificate": True,
+    }
+
+    try:  # pragma: no cover - depends on network availability
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+    except Exception:
+        return metadata
+
+    if isinstance(info, Mapping):
+        for key in ("title", "webpage_url", "upload_date"):
+            if key in info:
+                metadata[key] = info.get(key)
+
+    return metadata
+
+
+def _count_words(text: str) -> int:
+    if not isinstance(text, str):
+        return 0
+
+    stripped = text.strip()
+    if not stripped:
+        return 0
+
+    latin_tokens = re.findall(r"[A-Za-z0-9]+", stripped)
+    chinese_tokens = re.findall(r"[\u4e00-\u9fff]", stripped)
+
+    total = len(latin_tokens) + len(chinese_tokens)
+    if total == 0:
+        compact = re.sub(r"\s", "", stripped)
+        total = len(compact)
+
+    return max(total, 0)
 
 
 def _format_timestamp(value: Any) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace
@@ -14,7 +15,12 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+sys.modules.pop("podcast_transformer", None)
+sys.modules.pop("podcast_transformer.cli", None)
+
 from podcast_transformer import cli
+
+cli = importlib.reload(cli)
 
 
 @pytest.fixture
