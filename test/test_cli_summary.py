@@ -80,15 +80,18 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     summary = result["summary_markdown"]
     timeline = result["timeline_markdown"]
 
-    assert summary.startswith("# ")
+    expected_heading = "# 【通用】Demo Title-2024-M01"
+    assert summary.splitlines()[0] == expected_heading
     assert "翻译摘要" in summary
     assert "标题：Demo Title" in summary
     assert "预估阅读时长" in summary
-    assert "## 时间轴" in timeline
+    assert timeline.splitlines()[0] == expected_heading
     assert "Demo Title" in timeline
     assert result["metadata"]["publish_date"] == "2024-01-02"
+    assert result["metadata"]["domain"] == "通用"
     assert result["total_words"] > 0
     assert result["estimated_minutes"] >= 1
+    assert result["file_base"] == "【通用】DemoTitle-2024-M01"
     assert captured["model"] == "llab-gpt-5"
     messages = captured["messages"]
     assert isinstance(messages, list)
@@ -116,15 +119,16 @@ def test_run_with_azure_summary_outputs_summary(
         lambda *args, **kwargs: [dict(segment) for segment in segments],
     )
     fake_bundle = {
-        "summary_markdown": "# Summary\n\n内容",
+        "summary_markdown": "# 【Demo】Demo-2024-M01\n\n内容",
         "timeline_markdown": (
-            "# Timeline\n\n| 序号 | 起始 | 结束 | 时长 | 说话人 | 文本 |\n"
+            "# 【Demo】Demo-2024-M01\n\n| 序号 | 起始 | 结束 | 时长 | 说话人 | 文本 |\n"
             "| --- | --- | --- | --- | --- | --- |\n"
             "| 1 | 00:00:00.000 | 00:00:01.000 | 00:00:01.000 | Speaker 1 | Hello |"
         ),
         "metadata": {"title": "Demo"},
         "total_words": 2,
         "estimated_minutes": 1,
+        "file_base": "【Demo】Demo-2024-M01",
     }
 
     monkeypatch.setattr(
@@ -149,6 +153,8 @@ def test_run_with_azure_summary_outputs_summary(
     timeline_path = Path(data["timeline_path"])
     assert summary_path.exists()
     assert timeline_path.exists()
+    assert summary_path.name == "【Demo】Demo-2024-M01_summary.md"
+    assert timeline_path.name == "【Demo】Demo-2024-M01_timeline.md"
     assert summary_path.read_text(encoding="utf-8") == fake_bundle["summary_markdown"]
     assert timeline_path.read_text(encoding="utf-8") == fake_bundle["timeline_markdown"]
     assert data["total_words"] == fake_bundle["total_words"]

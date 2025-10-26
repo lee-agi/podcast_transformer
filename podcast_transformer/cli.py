@@ -25,6 +25,7 @@ from datetime import datetime
 from collections import defaultdict
 from typing import (
     Any,
+    Callable,
     Dict,
     Iterable,
     List,
@@ -273,6 +274,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             args.url,
             summary_bundle.get("summary_markdown", ""),
             summary_bundle.get("timeline_markdown", ""),
+            summary_bundle.get("file_base", "summary"),
         )
 
     payload: Union[List[MutableMapping[str, float | str]], MutableMapping[str, Any]]
@@ -559,6 +561,8 @@ def perform_azure_diarization(
             if 0 <= index - 1 < len(segment_durations)
             else 0.0
         )
+        stream_tokens = 0.0
+
         try:
             with open(segment_path, "rb") as audio_file:
                 request_kwargs: MutableMapping[str, Any] = {
@@ -566,13 +570,40 @@ def perform_azure_diarization(
                     "file": audio_file,
                     "response_format": "diarized_json",
                     "language": language,
-                    "chunking_strategy": chunking_strategy_config,
-                    "extra_body": request_extra_body,
+                    "chunking_strategy": "auto",
                 }
                 if request_known_names:
                     request_kwargs["known_speaker_names"] = request_known_names
 
-                response = client.audio.transcriptions.create(**request_kwargs)
+                def _handle_stream_chunk(payload: MutableMapping[str, Any]) -> None:
+                    nonlocal stream_tokens
+                    tokens = _extract_usage_tokens(payload)
+                    if tokens is None:
+                        return
+                    stream_tokens = max(stream_tokens, float(tokens))
+                    ratio = _compute_progress_ratio(
+                        processed_duration,
+                        total_audio_duration,
+                        produced_tokens + stream_tokens,
+                        total_estimated_tokens,
+                        segments_done,
+                        total_segments,
+                    )
+                    _update_progress_bar(
+                        ratio,
+                        _format_progress_detail(
+                            processed_duration,
+                            total_audio_duration,
+                            produced_tokens + stream_tokens,
+                            total_estimated_tokens,
+                            segments_done,
+                            total_segments,
+                        ),
+                    )
+
+                response = client.audio.transcriptions.create(
+                    **request_kwargs, stream=True
+                )
         except Exception as exc:  # pragma: no cover - depends on API behaviour
             if (
                 bad_request_error is not None
@@ -585,7 +616,9 @@ def perform_azure_diarization(
                 ) from exc
             raise
 
-        response_payload = _coerce_response_to_dict(response)
+        response_payload = _consume_transcription_response(
+            response, on_chunk=_handle_stream_chunk
+        )
         diarization_segments = _extract_diarization_segments(response_payload)
         transcript_segments = _extract_transcript_segments(response_payload)
 
@@ -642,7 +675,10 @@ def perform_azure_diarization(
         processed_duration = min(
             total_audio_duration, processed_duration + max(segment_duration, 0.0)
         )
-        produced_tokens += _estimate_tokens_from_transcript(transcript_segments)
+        segment_tokens = _estimate_tokens_from_transcript(transcript_segments)
+        if stream_tokens > 0:
+            segment_tokens = max(segment_tokens, stream_tokens)
+        produced_tokens += segment_tokens
         segments_done += 1
 
         ratio = _compute_progress_ratio(
@@ -1184,7 +1220,7 @@ def _compose_summary_documents(
         key=lambda item: float(item.get("start", 0.0)),
     )
 
-    generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
+    generated_at = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     if sorted_segments:
         starts = [float(item.get("start", 0.0)) for item in sorted_segments]
         ends = [float(item.get("end", item.get("start", 0.0))) for item in sorted_segments]
@@ -1203,28 +1239,32 @@ def _compose_summary_documents(
         }
     )
 
-    title = str(video_metadata.get("title") or "未知标题").strip() or "未知标题"
-    publish_date = str(video_metadata.get("upload_date") or "")
-    if publish_date and len(publish_date) == 8 and publish_date.isdigit():
-        publish_date = f"{publish_date[0:4]}-{publish_date[4:6]}-{publish_date[6:8]}"
-    elif not publish_date:
-        publish_date = "未知日期"
+    title_raw = video_metadata.get("title")
+    title = str(title_raw or "未知标题").strip() or "未知标题"
+    publish_date_raw = str(video_metadata.get("upload_date") or "").strip()
+    publish_date = _format_publish_date(publish_date_raw)
 
     source_url = str(video_metadata.get("webpage_url") or video_url)
+    domain = _extract_domain(video_metadata)
 
     total_words = _count_words(raw_summary)
     estimated_minutes = max(1, math.ceil(total_words / READING_WORDS_PER_MINUTE))
 
+    year, month = _derive_year_month(publish_date_raw, generated_at)
+    year_month_code = f"{year}-M{month}"
+    heading = f"【{domain}】{title}-{year_month_code}"
+    file_base = _sanitize_filename_base(heading)
+
     summary_lines: List[str] = []
-    summary_lines.append("# Podcast Transformer 摘要报告")
+    summary_lines.append(f"# {heading}")
     summary_lines.append("")
     summary_lines.append("## 封面")
-    summary_lines.append(f"- 生成时间：{generated_at}")
     summary_lines.append(f"- 标题：{title}")
     summary_lines.append(f"- 链接：{source_url}")
     summary_lines.append(f"- 发布日期：{publish_date}")
     summary_lines.append(f"- 总字数：{total_words}")
     summary_lines.append(f"- 预估阅读时长：约 {estimated_minutes} 分钟")
+    summary_lines.append(f"- 生成时间：{generated_at}")
     summary_lines.append(f"- 覆盖时长：{formatted_duration}")
     if speakers:
         summary_lines.append(f"- 识别说话人：{', '.join(speakers)}")
@@ -1234,15 +1274,15 @@ def _compose_summary_documents(
     summary_lines.append(raw_summary.strip())
 
     timeline_lines: List[str] = []
-    timeline_lines.append("# Podcast Transformer 时间轴")
+    timeline_lines.append(f"# {heading}")
     timeline_lines.append("")
     timeline_lines.append("## 封面")
-    timeline_lines.append(f"- 生成时间：{generated_at}")
     timeline_lines.append(f"- 标题：{title}")
     timeline_lines.append(f"- 链接：{source_url}")
     timeline_lines.append(f"- 发布日期：{publish_date}")
     timeline_lines.append(f"- 总字数：{total_words}")
     timeline_lines.append(f"- 预估阅读时长：约 {estimated_minutes} 分钟")
+    timeline_lines.append(f"- 生成时间：{generated_at}")
     timeline_lines.append(f"- 覆盖时长：{formatted_duration}")
     if speakers:
         timeline_lines.append(f"- 识别说话人：{', '.join(speakers)}")
@@ -1279,6 +1319,9 @@ def _compose_summary_documents(
         "estimated_minutes": estimated_minutes,
         "duration": formatted_duration,
         "speakers": speakers,
+        "domain": domain,
+        "year": year,
+        "month": month,
     }
 
     return {
@@ -1287,6 +1330,8 @@ def _compose_summary_documents(
         "metadata": metadata,
         "total_words": total_words,
         "estimated_minutes": estimated_minutes,
+        "file_base": file_base,
+        "heading": heading,
     }
 
 
@@ -1325,7 +1370,10 @@ def _extract_summary_text(response: object) -> str:
 
 
 def _write_summary_documents(
-    video_url: str, summary_markdown: str, timeline_markdown: str
+    video_url: str,
+    summary_markdown: str,
+    timeline_markdown: str,
+    file_base: str,
 ) -> Mapping[str, str]:
     if not summary_markdown or not summary_markdown.strip():
         raise RuntimeError("无法写入空的摘要 Markdown 内容。")
@@ -1333,8 +1381,10 @@ def _write_summary_documents(
         raise RuntimeError("无法写入空的时间轴 Markdown 内容。")
 
     directory = _resolve_video_cache_dir(video_url)
-    summary_path = os.path.join(directory, "summary.md")
-    timeline_path = os.path.join(directory, "timeline.md")
+    summary_filename = f"{file_base}_summary.md"
+    timeline_filename = f"{file_base}_timeline.md"
+    summary_path = os.path.join(directory, summary_filename)
+    timeline_path = os.path.join(directory, timeline_filename)
 
     try:
         with open(summary_path, "w", encoding="utf-8") as summary_file:
@@ -1416,7 +1466,59 @@ def _format_timestamp(value: Any) -> str:
     minutes = (total_milliseconds // 60_000) % 60
     secs = (total_milliseconds // 1000) % 60
     milliseconds = total_milliseconds % 1000
-    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{milliseconds:03d}"
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _format_publish_date(raw: str) -> str:
+    if raw and len(raw) == 8 and raw.isdigit():
+        return f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+    if raw and re.match(r"\d{4}-\d{2}-\d{2}", raw):
+        return raw
+    return "未知日期"
+
+
+def _derive_year_month(publish_date_raw: str, generated_at: str) -> Tuple[str, str]:
+    if publish_date_raw and publish_date_raw.isdigit() and len(publish_date_raw) == 8:
+        return publish_date_raw[:4], publish_date_raw[4:6]
+
+    match = re.match(r"(\d{4})-(\d{2})", publish_date_raw)
+    if match:
+        return match.group(1), match.group(2)
+
+    if re.match(r"\d{4}-\d{2}-\d{2}", generated_at):
+        return generated_at[:4], generated_at[5:7]
+
+    return "1970", "01"
+
+
+def _extract_domain(video_metadata: Mapping[str, Any]) -> str:
+    domain = ""
+    candidates = []
+    categories = video_metadata.get("categories")
+    if isinstance(categories, list):
+        candidates.extend(categories)
+    category = video_metadata.get("category")
+    if category is not None:
+        candidates.append(category)
+    tags = video_metadata.get("tags")
+    if isinstance(tags, list):
+        candidates.extend(tags)
+
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            name = candidate.strip()
+            if name:
+                domain = name
+                break
+
+    domain = domain or "通用"
+    return domain
+
+
+def _sanitize_filename_base(text: str) -> str:
+    sanitized = re.sub(r"[\\/:*?\"<>|]", "", text)
+    sanitized = sanitized.replace(" ", "")
+    return sanitized or "summary"
 
 
 def _build_extra_body(
@@ -1802,6 +1904,53 @@ def _max_segment_end(
             if end > max_end:
                 max_end = end
     return max_end
+
+
+def _consume_transcription_response(
+    response: Any,
+    on_chunk: Optional[Callable[[MutableMapping[str, Any]], None]] = None,
+) -> MutableMapping[str, Any]:
+    if isinstance(response, MutableMapping):
+        payload = _coerce_response_to_dict(response)
+        if on_chunk and payload:
+            on_chunk(payload)
+        return payload
+
+    if isinstance(response, Iterable) and not isinstance(response, (str, bytes)):
+        final_payload: MutableMapping[str, Any] = {}
+        for item in response:
+            payload = _coerce_response_to_dict(item)
+            if not payload:
+                continue
+            final_payload = payload
+            if on_chunk:
+                on_chunk(payload)
+        return final_payload
+
+    return _coerce_response_to_dict(response)
+
+
+def _extract_usage_tokens(payload: Mapping[str, Any]) -> Optional[float]:
+    candidates: List[Mapping[str, Any]] = []
+    if isinstance(payload, Mapping):
+        candidates.append(payload)
+        response_obj = payload.get("response")
+        if isinstance(response_obj, Mapping):
+            candidates.append(response_obj)
+
+    for candidate in candidates:
+        usage = candidate.get("usage") if isinstance(candidate, Mapping) else None
+        if not isinstance(usage, Mapping):
+            continue
+        for key in ("output_tokens", "total_tokens", "completion_tokens"):
+            tokens = usage.get(key)
+            if tokens is None:
+                continue
+            try:
+                return float(tokens)
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
 def _is_youtube_hostname(hostname: str) -> bool:

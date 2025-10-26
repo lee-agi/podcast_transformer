@@ -1,3 +1,5 @@
 .pytest_cache/
 .venv
 AGENTS.md
+podcast_transformer/__pycache__/
+test/__pycache__/

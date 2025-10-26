@@ -56,11 +56,16 @@ def test_perform_azure_diarization_uses_auto_chunking(
             raise RuntimeError("chunking_strategy must be dict with type auto")
         if kwargs.get("known_speaker_names") != ["Alice"]:
             raise RuntimeError("known_speaker_names must match provided speakers")
+        if kwargs.get("stream") is not True:
+            raise RuntimeError("stream flag must be enabled")
         segment = {"start": "0.0", "end": "1.0", "speaker": "Speaker 1"}
-        return {
-            "segments": [segment],
-            "diarization": {"segments": [segment]},
-        }
+        return [
+            {
+                "segments": [segment],
+                "diarization": {"segments": [segment]},
+                "usage": {"output_tokens": 10},
+            }
+        ]
 
     class FakeTranscriptions:
         def __init__(self) -> None:
