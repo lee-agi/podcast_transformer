@@ -10,6 +10,7 @@
 - 内置 Android 客户端回退逻辑，即使未配置 cookie 也能规避常见的 403 Forbidden 下载失败。
 - 自动检测超长（超过 Azure 1,500 秒限制）或超大音频并切分成多个片段，逐段提交 Azure，并通过流式返回实时刷新进度条。
 - 通过 `gpt-4o-transcribe-diarize` 返回的说话人分段信息，将不同说话人合并入字幕。
+- 兼容 Azure OpenAI `diarized_json` 响应中 `response.output` 的嵌套结构，即使 YouTube 无字幕也能利用 Azure 转写结果产出文本。
 - 当 Azure 暂未返回说话人分段时，会退回空说话人列表并继续使用已有字幕，避免 CLI 直接失败。
 - 可选调用 Azure GPT-5，根据定制 system prompt 翻译与总结 ASR 片段。
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。

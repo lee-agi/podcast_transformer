@@ -99,7 +99,7 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     assert messages[0]["content"] == cli.SUMMARY_PROMPT
     assert messages[1]["role"] == "user"
     assert "Hello world" in messages[1]["content"]
-    assert "00:00:00.000" in messages[1]["content"]
+    assert "00:00:00" in messages[1]["content"]
 
 
 def test_run_with_azure_summary_outputs_summary(
@@ -131,6 +131,9 @@ def test_run_with_azure_summary_outputs_summary(
         "file_base": "【Demo】Demo-2024-M01",
     }
 
+    outbox_dir = tmp_path / "outbox"
+    monkeypatch.setenv("PODCAST_TRANSFORMER_OUTBOX_DIR", str(outbox_dir))
+
     monkeypatch.setattr(
         cli,
         "generate_translation_summary",
@@ -159,3 +162,8 @@ def test_run_with_azure_summary_outputs_summary(
     assert timeline_path.read_text(encoding="utf-8") == fake_bundle["timeline_markdown"]
     assert data["total_words"] == fake_bundle["total_words"]
     assert data["estimated_minutes"] == fake_bundle["estimated_minutes"]
+    outbox_summary = data["summary_paths"].get("outbox_summary")
+    assert outbox_summary
+    outbox_path = Path(outbox_summary)
+    assert outbox_path.exists()
+    assert outbox_path.read_text(encoding="utf-8") == fake_bundle["summary_markdown"]

@@ -28,6 +28,7 @@ from typing import (
     Callable,
     Dict,
     Iterable,
+    Iterator,
     List,
     Mapping,
     MutableMapping,
@@ -58,6 +59,10 @@ WAV_FRAME_CHUNK_SIZE = 32_768
 ESTIMATED_TOKENS_PER_SECOND = 4.0
 PROGRESS_BAR_WIDTH = 30
 READING_WORDS_PER_MINUTE = 300
+DEFAULT_OUTBOX_DIR = (
+    "/Users/clzhang/Library/Mobile Documents/"
+    "iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox"
+)
 
 
 SUMMARY_PROMPT = '''
@@ -845,40 +850,59 @@ def _coerce_response_to_dict(response: object) -> MutableMapping[str, Any]:
     return {}
 
 
+def _iter_nested_mappings(
+    payload: Mapping[str, Any]
+) -> Iterator[MutableMapping[str, Any]]:
+    """Yield nested mappings discovered within the payload."""
+
+    if not isinstance(payload, MutableMapping):
+        return
+
+    stack: List[MutableMapping[str, Any]] = [payload]
+    seen_ids: set[int] = set()
+
+    while stack:
+        current = stack.pop()
+        identifier = id(current)
+        if identifier in seen_ids:
+            continue
+        seen_ids.add(identifier)
+        yield current
+        for value in current.values():
+            if isinstance(value, MutableMapping):
+                stack.append(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, MutableMapping):
+                        stack.append(item)
+
+
+def _collect_segment_candidates(
+    payload: Mapping[str, Any], keys: Sequence[str]
+) -> List[List[MutableMapping[str, Any]]]:
+    """Collect candidate segment lists from nested payload structures."""
+
+    candidates: List[List[MutableMapping[str, Any]]] = []
+
+    for mapping in _iter_nested_mappings(payload):
+        for key in keys:
+            value = mapping.get(key)
+            if isinstance(value, list):
+                segment_list = [
+                    item for item in value if isinstance(item, MutableMapping)
+                ]
+                if segment_list:
+                    candidates.append(segment_list)
+
+    return candidates
+
+
 def _extract_diarization_segments(
     payload: MutableMapping[str, Any]
 ) -> List[MutableMapping[str, float | str]]:
     """Extract diarization segments from verbose JSON payload."""
 
-    candidates: List[List[MutableMapping[str, Any]]] = []
-
-    for key in ("segments", "words", "items"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            segment_list = [item for item in value if isinstance(item, MutableMapping)]
-            if segment_list:
-                candidates.append(segment_list)
-
-    diarization = payload.get("diarization")
-    if isinstance(diarization, MutableMapping):
-        nested = diarization.get("segments")
-        if isinstance(nested, list):
-            segment_list = [item for item in nested if isinstance(item, MutableMapping)]
-            if segment_list:
-                candidates.append(segment_list)
-
-    data_entries = payload.get("data")
-    if isinstance(data_entries, list):
-        for entry in data_entries:
-            if not isinstance(entry, MutableMapping):
-                continue
-            entry_segments = entry.get("segments")
-            if isinstance(entry_segments, list):
-                segment_list = [
-                    item for item in entry_segments if isinstance(item, MutableMapping)
-                ]
-                if segment_list:
-                    candidates.append(segment_list)
+    candidates = _collect_segment_candidates(payload, ("segments", "words", "items"))
 
     normalized: List[MutableMapping[str, float | str]] = []
     seen = set()
@@ -909,37 +933,7 @@ def _extract_transcript_segments(
 ) -> List[MutableMapping[str, float | str]]:
     """Extract transcript segments with text from payload."""
 
-    candidates: List[List[MutableMapping[str, Any]]] = []
-
-    for key in ("segments", "utterances", "results"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            segment_list = [item for item in value if isinstance(item, MutableMapping)]
-            if segment_list:
-                candidates.append(segment_list)
-
-    diarization = payload.get("diarization")
-    if isinstance(diarization, MutableMapping):
-        for key in ("segments", "utterances"):
-            nested = diarization.get(key)
-            if isinstance(nested, list):
-                segment_list = [item for item in nested if isinstance(item, MutableMapping)]
-                if segment_list:
-                    candidates.append(segment_list)
-
-    data_entries = payload.get("data")
-    if isinstance(data_entries, list):
-        for entry in data_entries:
-            if not isinstance(entry, MutableMapping):
-                continue
-            for key in ("segments", "utterances"):
-                nested = entry.get(key)
-                if isinstance(nested, list):
-                    segment_list = [
-                        item for item in nested if isinstance(item, MutableMapping)
-                    ]
-                    if segment_list:
-                        candidates.append(segment_list)
+    candidates = _collect_segment_candidates(payload, ("segments", "utterances", "results"))
 
     transcript_segments: List[MutableMapping[str, float | str]] = []
     seen = set()
@@ -1401,7 +1395,13 @@ def _write_summary_documents(
             f"写入摘要/时间轴 Markdown 文件失败：{summary_path}, {timeline_path}"
         ) from exc
 
-    return {"summary": summary_path, "timeline": timeline_path}
+    outbox_path = _copy_summary_to_outbox(summary_path)
+
+    return {
+        "summary": summary_path,
+        "timeline": timeline_path,
+        "outbox_summary": outbox_path,
+    }
 
 
 def _fetch_video_metadata(video_url: str) -> Mapping[str, Any]:
@@ -1453,6 +1453,22 @@ def _count_words(text: str) -> int:
         total = len(compact)
 
     return max(total, 0)
+
+
+def _copy_summary_to_outbox(summary_path: str) -> Optional[str]:
+    outbox_dir = os.getenv("PODCAST_TRANSFORMER_OUTBOX_DIR", DEFAULT_OUTBOX_DIR)
+    if not outbox_dir:
+        return None
+
+    try:
+        resolved_dir = os.path.expanduser(outbox_dir)
+        os.makedirs(resolved_dir, exist_ok=True)
+        base_name = os.path.basename(summary_path)
+        target_path = os.path.join(resolved_dir, base_name)
+        shutil.copyfile(summary_path, target_path)
+        return target_path
+    except OSError:
+        return None
 
 
 def _format_timestamp(value: Any) -> str:

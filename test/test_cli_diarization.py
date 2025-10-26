@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 import wave
@@ -67,3 +68,86 @@ def test_perform_azure_diarization_handles_empty_response(
     result = cli.perform_azure_diarization("https://youtu.be/example", "en")
 
     assert result == {"speakers": [], "transcript": []}
+
+
+def test_cli_azure_diarization_handles_nested_payload(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """当 Azure 响应嵌套在 response.output 时也应提取字幕。"""
+
+    wav_path = tmp_path / "audio.wav"
+    _write_silent_wav(wav_path, duration_seconds=1.0)
+
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "dummy")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.com")
+
+    nested_payload = {
+        "response": {
+            "output": [
+                {
+                    "type": "diarization",
+                    "diarization": {
+                        "segments": [
+                            {"start": 0.0, "end": 1.0, "speaker": "Speaker 1"},
+                            {"start": 1.0, "end": 2.0, "speaker": "Speaker 2"},
+                        ]
+                    },
+                    "segments": [
+                        {
+                            "start": 0.0,
+                            "end": 1.0,
+                            "text": "Hello",
+                            "speaker": "Speaker 1",
+                        },
+                        {
+                            "start": 1.0,
+                            "end": 2.0,
+                            "text": "World",
+                            "speaker": "Speaker 2",
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+
+    class _Client(_DummyAzureOpenAI):
+        pass
+
+    module = types.SimpleNamespace(
+        AzureOpenAI=_Client,
+        BadRequestError=RuntimeError,
+    )
+    monkeypatch.setitem(sys.modules, "openai", module)
+
+    def fake_consume(response, on_chunk=None):
+        if on_chunk is not None:
+            on_chunk({"usage": {"output_tokens": 10}})
+        return nested_payload
+
+    def fake_fetch_transcript(*_args, **_kwargs):
+        raise RuntimeError(
+            "No transcript available in requested languages: ['en']"
+        )
+
+    monkeypatch.setattr(cli, "_consume_transcription_response", fake_consume)
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+    monkeypatch.setattr(cli, "_prepare_audio_cache", lambda *_: str(wav_path))
+    monkeypatch.setattr(cli, "_ensure_audio_segments", lambda *_: [str(wav_path)])
+    monkeypatch.setattr(cli, "_resolve_video_cache_dir", lambda *_: str(tmp_path))
+
+    exit_code = cli.run([
+        "--url",
+        "https://youtu.be/nested",
+        "--azure-diarization",
+    ])
+
+    assert exit_code == 0
+
+    output = capsys.readouterr().out
+    lines = [line for line in output.splitlines() if line.strip()]
+    assert lines, "Expected JSON payload in CLI output"
+    payload = json.loads(lines[-1])
+    assert payload[0]["text"] == "Hello"
+    assert payload[0]["speaker"] == "Speaker 1"
+    assert payload[1]["text"] == "World"
