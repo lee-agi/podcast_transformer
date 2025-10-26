@@ -389,6 +389,7 @@ def test_cli_can_disable_azure_streaming(monkeypatch, tmp_path):
             "--url",
             "https://youtu.be/disable",
             "--azure-diarization",
+            "--force-azure-diarization",
             "--no-azure-streaming",
         ]
     )

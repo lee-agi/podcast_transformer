@@ -12,6 +12,7 @@
 - 通过 `gpt-4o-transcribe-diarize` 返回的说话人分段信息，将不同说话人合并入字幕。
 - 兼容 Azure OpenAI `diarized_json` 响应中 `response.output[*].content` 等多层嵌套结构，自动提取 `segments`/`chunks` 字段，即使 YouTube 无字幕也能利用 Azure 转写结果产出文本。
 - 支持通过 `--azure-streaming/--no-azure-streaming` 控制 Azure 转写是否流式执行；启用时会实时刷新进度条，必要时可设置 `PODCAST_TRANSFORMER_DEBUG_PAYLOAD=1` 输出原始 chunk 便于排查。
+- 摘要与时间轴 Markdown 会自动复制一份到 `PODCAST_TRANSFORMER_OUTBOX_DIR`（默认 `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox`），便于在 Obsidian 等笔记库中直接浏览。
 - 当 Azure 暂未返回说话人分段时，会退回空说话人列表并继续使用已有字幕，避免 CLI 直接失败。
 - 若视频已提供带时间轴的字幕，默认直接复用字幕并跳过 Azure 说话人分离，避免冗余的音频下载与 ASR 调用；如需强制执行可添加 `--force-azure-diarization`。
 - 可选调用 Azure GPT-5，根据定制 system prompt 翻译与总结 ASR 片段。

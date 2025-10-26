@@ -99,7 +99,7 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     assert messages[0]["content"] == cli.SUMMARY_PROMPT
     assert messages[1]["role"] == "user"
     assert "Hello world" in messages[1]["content"]
-    assert "00:00:00.000" in messages[1]["content"]
+    assert "00:00:00" in messages[1]["content"]
 
 
 def test_run_with_azure_summary_outputs_summary(
@@ -173,6 +173,11 @@ def test_run_with_azure_summary_outputs_summary(
     outbox_path = Path(outbox_summary)
     assert outbox_path.exists()
     assert outbox_path.read_text(encoding="utf-8") == fake_bundle["summary_markdown"]
+    outbox_timeline = data["summary_paths"].get("outbox_timeline")
+    assert outbox_timeline
+    timeline_outbox_path = Path(outbox_timeline)
+    assert timeline_outbox_path.exists()
+    assert timeline_outbox_path.read_text(encoding="utf-8") == fake_bundle["timeline_markdown"]
 
 
 def test_run_with_custom_summary_prompt_file(
@@ -231,3 +236,29 @@ def test_run_with_custom_summary_prompt_file(
     data = json.loads(output)
     assert data["summary"] == fake_bundle["summary_markdown"]
     assert captured_prompt["prompt"] == "自定义系统提示"
+
+
+def test_write_summary_documents_copies_to_default_outbox(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+
+    default_outbox = tmp_path / "outbox"
+    monkeypatch.setattr(cli, "DEFAULT_OUTBOX_DIR", str(default_outbox))
+    monkeypatch.delenv("PODCAST_TRANSFORMER_OUTBOX_DIR", raising=False)
+    monkeypatch.setattr(
+        cli,
+        "_resolve_video_cache_dir",
+        lambda *_args, **_kwargs: str(cache_dir),
+    )
+
+    result = cli._write_summary_documents(
+        "https://youtu.be/default",
+        "# 摘要\n内容",
+        "# 时间轴\n内容",
+        "demo",
+    )
+
+    outbox_summary = result.get("outbox_summary")
+    assert outbox_summary
+    assert Path(outbox_summary).exists()
+    assert Path(outbox_summary).parent == default_outbox

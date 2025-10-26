@@ -58,6 +58,10 @@ WAV_FRAME_CHUNK_SIZE = 32_768
 ESTIMATED_TOKENS_PER_SECOND = 4.0
 PROGRESS_BAR_WIDTH = 30
 READING_WORDS_PER_MINUTE = 300
+DEFAULT_OUTBOX_DIR = (
+    "/Users/clzhang/Library/Mobile Documents/"
+    "iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox"
+)
 
 
 _TIME_START_KEYS = (
@@ -257,7 +261,6 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--summary-prompt-file",
         type=str,
-        default="./prompts/summary_prompt.txt",
         dest="summary_prompt_file",
         help="自定义 Azure 摘要系统 Prompt 的配置文件路径。",
     )
@@ -1862,7 +1865,37 @@ def _write_summary_documents(
             f"写入摘要/时间轴 Markdown 文件失败：{summary_path}, {timeline_path}"
         ) from exc
 
-    return {"summary": summary_path, "timeline": timeline_path}
+    result: Dict[str, str] = {
+        "summary": summary_path,
+        "timeline": timeline_path,
+    }
+
+    outbox_summary = _copy_file_to_outbox(summary_path)
+    if outbox_summary is not None:
+        result["outbox_summary"] = outbox_summary
+
+    outbox_timeline = _copy_file_to_outbox(timeline_path)
+    if outbox_timeline is not None:
+        result["outbox_timeline"] = outbox_timeline
+
+    return result
+
+
+def _copy_file_to_outbox(source_path: str) -> Optional[str]:
+    """Copy a generated file to the configured outbox directory."""
+
+    outbox_dir = os.getenv("PODCAST_TRANSFORMER_OUTBOX_DIR", DEFAULT_OUTBOX_DIR)
+    if not outbox_dir:
+        return None
+
+    try:
+        resolved_dir = os.path.expanduser(outbox_dir)
+        os.makedirs(resolved_dir, exist_ok=True)
+        target_path = os.path.join(resolved_dir, os.path.basename(source_path))
+        shutil.copyfile(source_path, target_path)
+        return target_path
+    except OSError:
+        return None
 
 
 def _fetch_video_metadata(video_url: str) -> Mapping[str, Any]:
