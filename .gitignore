@@ -5,3 +5,5 @@ podcast_transformer/__pycache__/
 test/__pycache__/
 build/
 podcast_transformer.egg-info/
+cookies.txt
+.vscode

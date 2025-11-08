@@ -396,3 +396,8 @@ def test_cli_can_disable_azure_streaming(monkeypatch, tmp_path):
 
     assert exit_code == 0
     assert captured["streaming"] is False
+
+
+def test_should_try_android_fallback_with_cookies():
+    exc = RuntimeError("HTTP Error 403: Forbidden")
+    assert cli._should_try_android_fallback(exc, cookiefile="/tmp/cookies.txt")

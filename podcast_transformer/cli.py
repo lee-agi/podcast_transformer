@@ -1742,6 +1742,8 @@ def _compose_summary_documents(
     summary_lines.append("")
     summary_lines.append("## 模型总结")
     summary_lines.append(raw_summary.strip())
+    summary_lines.append("")
+    summary_lines.extend(_build_exchange_footer())
 
     timeline_lines: List[str] = []
     timeline_lines.append(f"# {heading}")
@@ -1803,6 +1805,29 @@ def _compose_summary_documents(
         "file_base": file_base,
         "heading": heading,
     }
+
+
+def _build_exchange_footer() -> List[str]:
+    weekday_map = {
+        0: "周一",
+        1: "周二",
+        2: "周三",
+        3: "周四",
+        4: "周五",
+        5: "周六",
+        6: "周日",
+    }
+
+    now = datetime.now()
+    zh_weekday = weekday_map.get(now.weekday(), "周?")
+    formatted_date = f"{now.strftime('%Y-%m-%d')}_{zh_weekday}"
+
+    return [
+        "## 欢迎交流与合作",
+        "目前主要兴趣是探索agent的真正落地，想进一步交流可加微信（微信号：cleezhang），一些[自我介绍](https://lee-agi.github.io/Insights/16695c5e82/)。",
+        "",
+        f"> 本文发表于 {formatted_date}。",
+    ]
 
 
 def _sanitize_markdown_cell(value: str) -> str:
@@ -2598,11 +2623,9 @@ def _download_with_ytdlp(
 def _should_try_android_fallback(
     exc: BaseException, cookiefile: Optional[str]
 ) -> bool:
-    """Return True when 403 occurs without cookie support."""
+    """Return True when 403 occurs; cookies no longer prevent fallback."""
 
-    if cookiefile:
-        return False
-
+    _ = cookiefile  # legacy parameter retained for compatibility
     message = str(exc)
     if message and ("403" in message or "Forbidden" in message):
         return True
@@ -2642,8 +2665,6 @@ def _build_android_fallback_options(base_options: Mapping[str, Any]) -> Dict[str
     youtube_args.setdefault("player_skip", ["configs"])
     extractor_args["youtube"] = youtube_args
     fallback_options["extractor_args"] = extractor_args
-
-    fallback_options.pop("cookiefile", None)
 
     return fallback_options
 
