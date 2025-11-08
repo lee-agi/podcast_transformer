@@ -23,6 +23,7 @@ import tempfile
 import wave
 from datetime import datetime
 from collections import defaultdict
+from importlib import metadata
 from pathlib import Path
 from typing import (
     Any,
@@ -63,6 +64,11 @@ DEFAULT_OUTBOX_DIR = (
     "/Users/clzhang/Library/Mobile Documents/"
     "iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox"
 )
+
+try:
+    __CLI_VERSION = metadata.version("podcast-transformer")
+except metadata.PackageNotFoundError:
+    __CLI_VERSION = "0.0.0"
 
 
 _TIME_START_KEYS = (
@@ -237,6 +243,13 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             "Additional language codes to try if the primary language is not "
             "available. Can be supplied multiple times."
         ),
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="version",
+        version=f"podcast-transformer {__CLI_VERSION}",
+        help="显示版本信息并退出。",
     )
     parser.add_argument(
         "--azure-diarization",
@@ -1613,38 +1626,72 @@ def generate_translation_summary(
             "Azure OpenAI 凭据缺失。请设置 AZURE_OPENAI_API_KEY与 AZURE_OPENAI_ENDPOINT。"
         )
 
-    summary_api_version = (
-        os.getenv("AZURE_OPENAI_SUMMARY_API_VERSION") or "2025-01-01-preview"
-    )
-    deployment = os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT") or "llab-gpt-5"
-
-    try:
-        from openai import AzureOpenAI
-    except ModuleNotFoundError as exc:  # pragma: no cover - depends on env
-        raise RuntimeError(
-            "openai 库未安装。请执行 `pip install openai`."
-        ) from exc
+    deployment = os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT") or "llab-gpt-5-pro"
 
     instruction = prompt or SUMMARY_PROMPT
     timeline = _format_segments_for_summary(segments)
     user_message = "原始 ASR 片段如下：\n" + timeline
 
-    client = AzureOpenAI(
-        api_key=azure_key,
-        api_version=summary_api_version,
-        azure_endpoint=azure_endpoint,
-    )
+    use_responses = deployment.endswith("-pro") or str(
+        os.getenv("AZURE_OPENAI_USE_RESPONSES", "")
+    ).lower() in {"1", "true", "yes"}
 
-    response = client.chat.completions.create(
-        model=deployment,
-        messages=[
-            {"role": "system", "content": instruction},
-            {"role": "user", "content": user_message},
-        ],
-        max_completion_tokens=16384,
-    )
+    if use_responses:
+        base_url = os.getenv("AZURE_OPENAI_RESPONSES_BASE_URL")
+        if not base_url:
+            base_url = _build_responses_base_url(azure_endpoint)
 
-    raw_summary = _extract_summary_text(response)
+        try:
+            from openai import OpenAI
+        except ModuleNotFoundError as exc:  # pragma: no cover - depends on env
+            raise RuntimeError(
+                "openai 库未安装。请执行 `pip install openai`."
+            ) from exc
+
+        client = OpenAI(base_url=base_url.rstrip("/"), api_key=azure_key)
+        response = client.responses.create(
+            model=deployment,
+            input=[
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": instruction}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": user_message}],
+                },
+            ],
+            max_output_tokens=16384,
+        )
+        raw_summary = _extract_responses_text(response)
+    else:
+        summary_api_version = (
+            os.getenv("AZURE_OPENAI_SUMMARY_API_VERSION") or "2025-01-01-preview"
+        )
+
+        try:
+            from openai import AzureOpenAI
+        except ModuleNotFoundError as exc:  # pragma: no cover - depends on env
+            raise RuntimeError(
+                "openai 库未安装。请执行 `pip install openai`."
+            ) from exc
+
+        client = AzureOpenAI(
+            api_key=azure_key,
+            api_version=summary_api_version,
+            azure_endpoint=azure_endpoint,
+        )
+
+        response = client.chat.completions.create(
+            model=deployment,
+            messages=[
+                {"role": "system", "content": instruction},
+                {"role": "user", "content": user_message},
+            ],
+            max_completion_tokens=16384,
+        )
+        raw_summary = _extract_summary_text(response)
+
     video_metadata = _fetch_video_metadata(video_url)
     return _compose_summary_documents(segments, raw_summary, video_metadata, video_url)
 
@@ -1828,6 +1875,52 @@ def _build_exchange_footer() -> List[str]:
         "",
         f"> 本文发表于 {formatted_date}。",
     ]
+
+
+def _build_responses_base_url(endpoint: str) -> str:
+    normalized = endpoint.rstrip("/")
+    if normalized.endswith("/openai/v1"):
+        return normalized
+    return f"{normalized}/openai/v1"
+
+
+def _extract_responses_text(response: object) -> str:
+    candidate = getattr(response, "output_text", None)
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+
+    data = None
+    if isinstance(response, MutableMapping):
+        data = response.get("output") or response.get("data") or response.get("choices")
+    else:
+        data = getattr(response, "output", None) or getattr(response, "data", None)
+
+    texts: List[str] = []
+
+    if isinstance(data, list):
+        for item in data:
+            content = None
+            if isinstance(item, MutableMapping):
+                content = item.get("content")
+            else:
+                content = getattr(item, "content", None)
+
+            if isinstance(content, list):
+                for block in content:
+                    text_value = None
+                    if isinstance(block, MutableMapping):
+                        text_value = block.get("text")
+                    else:
+                        text_value = getattr(block, "text", None)
+                    if isinstance(text_value, str) and text_value.strip():
+                        texts.append(text_value.strip())
+            elif isinstance(content, str) and content.strip():
+                texts.append(content.strip())
+
+    if texts:
+        return "\n".join(texts).strip()
+
+    raise RuntimeError("Azure GPT-5 未返回可用的摘要结果。")
 
 
 def _sanitize_markdown_cell(value: str) -> str:

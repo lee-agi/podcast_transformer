@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 from types import ModuleType
+import types
 from typing import Any, Dict
 
 import pytest
@@ -30,6 +31,7 @@ def _ensure_openai_removed() -> None:
 def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
+    monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "llab-gpt-5-pro")
     monkeypatch.delenv("AZURE_OPENAI_SUMMARY_API_VERSION", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", raising=False)
 
@@ -39,28 +41,25 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
 
     captured: Dict[str, Any] = {}
 
-    def fake_create(**kwargs: Any) -> Dict[str, Any]:
-        captured.update(kwargs)
-        return {
-            "choices": [
-                {"message": {"content": "翻译摘要"}},
-            ]
-        }
+    class FakeResponses:
+        def create(self, **kwargs: Any):
+            captured.update(kwargs)
+            return types.SimpleNamespace(
+                output=[
+                    types.SimpleNamespace(
+                        content=[types.SimpleNamespace(text="翻译摘要")]
+                    )
+                ],
+                output_text="翻译摘要",
+            )
 
-    class FakeCompletions:
-        def create(self, **kwargs: Any) -> Dict[str, Any]:
-            return fake_create(**kwargs)
-
-    class FakeChat:
-        def __init__(self) -> None:
-            self.completions = FakeCompletions()
-
-    class FakeAzureClient:
+    class FakeClient:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.chat = FakeChat()
+            captured["init_kwargs"] = kwargs
+            self.responses = FakeResponses()
 
     fake_openai = ModuleType("openai")
-    fake_openai.AzureOpenAI = FakeAzureClient  # type: ignore[attr-defined]
+    fake_openai.OpenAI = FakeClient  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "openai", fake_openai)
 
     monkeypatch.setattr(
@@ -92,15 +91,66 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     assert result["total_words"] > 0
     assert result["estimated_minutes"] >= 1
     assert result["file_base"] == "【通用】DemoTitle-2024-M01"
+    assert captured["init_kwargs"]["base_url"] == "https://example.invalid/openai/v1"
+    assert captured["model"] == "llab-gpt-5-pro"
+    request_input = captured["input"]
+    assert isinstance(request_input, list)
+    system_msg = request_input[0]
+    user_msg = request_input[1]
+    assert system_msg["role"] == "system"
+    assert system_msg["content"][0]["type"] == "input_text"
+    assert system_msg["content"][0]["text"] == cli.SUMMARY_PROMPT
+    assert user_msg["role"] == "user"
+    assert user_msg["content"][0]["type"] == "input_text"
+    assert "Hello world" in user_msg["content"][0]["text"]
+    assert "00:00:00" in user_msg["content"][0]["text"]
+    assert "## 欢迎交流与合作" in summary
+
+
+def test_generate_translation_summary_supports_legacy_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
+    monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "llab-gpt-5")
+    monkeypatch.delenv("AZURE_OPENAI_USE_RESPONSES", raising=False)
+
+    segments = [
+        {"start": 0.0, "end": 2.0, "speaker": "Speaker", "text": "Legacy"}
+    ]
+
+    captured: Dict[str, Any] = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs: Any) -> Dict[str, Any]:
+            captured.update(kwargs)
+            return {
+                "choices": [
+                    {"message": {"content": "旧版摘要"}},
+                ]
+            }
+
+    class FakeChat:
+        def __init__(self) -> None:
+            self.completions = FakeCompletions()
+
+    class FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured["init_kwargs"] = kwargs
+            self.chat = FakeChat()
+
+    fake_openai = ModuleType("openai")
+    fake_openai.AzureOpenAI = FakeClient  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+
+    result = cli.generate_translation_summary(
+        segments, "https://example.invalid/watch?v=legacy"
+    )
+
     assert captured["model"] == "llab-gpt-5"
     messages = captured["messages"]
-    assert isinstance(messages, list)
     assert messages[0]["role"] == "system"
-    assert messages[0]["content"] == cli.SUMMARY_PROMPT
     assert messages[1]["role"] == "user"
-    assert "Hello world" in messages[1]["content"]
-    assert "00:00:00" in messages[1]["content"]
-    assert "## 欢迎交流与合作" in summary
+    assert "Legacy" in messages[1]["content"]
+    assert "旧版摘要" in result["summary_markdown"]
 
 
 def test_run_with_azure_summary_outputs_summary(

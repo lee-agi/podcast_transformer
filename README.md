@@ -15,7 +15,7 @@
 - 摘要 Markdown 会自动复制一份到 `PODCAST_TRANSFORMER_OUTBOX_DIR`（默认 `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox`），便于在 Obsidian 等笔记库中直接浏览。
 - 当 Azure 暂未返回说话人分段时，会退回空说话人列表并继续使用已有字幕，避免 CLI 直接失败。
 - 若视频已提供带时间轴的字幕，默认直接复用字幕并跳过 Azure 说话人分离，避免冗余的音频下载与 ASR 调用；如需强制执行可添加 `--force-azure-diarization`。
-- 可选调用 Azure GPT-5，根据定制 system prompt 翻译与总结 ASR 片段。
+- 可选调用 Azure GPT-5 Pro（默认部署 `gpt-5-pro`），通过 Responses API 翻译与总结 ASR 片段，可使用 `--summary-prompt-file` 定制提示词。
 - 支持通过 `--summary-prompt-file` 指定外部 Prompt 配置文件，无需改动代码即可调整摘要策略。
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
 - 自动加载工作目录或 `PODCAST_TRANSFORMER_DOTENV` 指向的 `.env` 文件，简化凭据管理。
@@ -64,7 +64,9 @@ export AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT="gpt-4o-transcribe-diarize"
 # export AZURE_OPENAI_CHUNKING_STRATEGY='{"type": "server_vad", "threshold": 0.6}'
 # 可选：配置 GPT-5 翻译/总结调用所用的 API 版本与部署名称
 export AZURE_OPENAI_SUMMARY_API_VERSION="2025-01-01-preview"
-export AZURE_OPENAI_SUMMARY_DEPLOYMENT="gpt-5"
+export AZURE_OPENAI_SUMMARY_DEPLOYMENT="gpt-5-pro"
+# 可选：覆盖 Responses API 基础地址（默认 <AZURE_OPENAI_ENDPOINT>/openai/v1）
+# export AZURE_OPENAI_RESPONSES_BASE_URL="https://region-001.openai.azure.com/openai/v1"
 ```
 
 可通过 `--max-speakers` 对说话人数量做最佳努力限制；超出时会将较小说话人映射到主要说话人之一。
