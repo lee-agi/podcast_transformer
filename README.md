@@ -66,7 +66,7 @@ export AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT="gpt-4o-transcribe-diarize"
 export AZURE_OPENAI_SUMMARY_API_VERSION="2025-01-01-preview"
 export AZURE_OPENAI_SUMMARY_DEPLOYMENT="gpt-5-pro"
 # 可选：覆盖 Responses API 基础地址（默认 <AZURE_OPENAI_ENDPOINT>/openai/v1）
-# export AZURE_OPENAI_RESPONSES_BASE_URL="https://region-001.openai.azure.com/openai/v1"
+# export AZURE_OPENAI_RESPONSES_BASE_URL="https://your-resource.openai.azure.com/openai/v1"
 ```
 
 可通过 `--max-speakers` 对说话人数量做最佳努力限制；超出时会将较小说话人映射到主要说话人之一。
