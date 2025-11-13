@@ -1,6 +1,7 @@
 .pytest_cache/
 .venv
 AGENTS.md
+WARP.md
 podcast_transformer/__pycache__/
 test/__pycache__/
 build/

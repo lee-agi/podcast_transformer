@@ -22,6 +22,7 @@ import sys
 import tempfile
 import wave
 from datetime import datetime
+from html.parser import HTMLParser
 from collections import defaultdict
 from importlib import metadata
 from pathlib import Path
@@ -38,7 +39,7 @@ from typing import (
     Tuple,
     Union,
 )
-from urllib.parse import ParseResult, parse_qs, urlparse
+from urllib.parse import ParseResult, parse_qs, urljoin, urlparse
 
 
 DEFAULT_YTDLP_USER_AGENT = (
@@ -363,6 +364,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         List[MutableMapping[str, float | str]]
     ] = None
     transcript_error: Optional[RuntimeError] = None
+    article_bundle: Optional[Mapping[str, Any]] = None
 
     try:
         transcript_segments = fetch_transcript_with_metadata(
@@ -372,13 +374,29 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         )
     except RuntimeError as exc:
         transcript_error = exc
-        if not args.azure_diarization:
-            raise
+
+    if transcript_segments is None and not args.azure_diarization:
+        article_bundle = _maybe_fetch_article_assets(args.url)
+        if article_bundle is not None:
+            transcript_segments = [
+                dict(segment)
+                for segment in article_bundle.get("segments", [])
+                if isinstance(segment, Mapping)
+            ]
+            if transcript_segments:
+                transcript_error = None
+            else:
+                article_bundle = None
 
     diarization_segments: Optional[List[MutableMapping[str, float | str]]] = None
     azure_payload: Optional[MutableMapping[str, Any]] = None
 
     should_use_azure = bool(args.azure_diarization)
+    if article_bundle is not None:
+        if args.force_azure_diarization:
+            raise RuntimeError("网页链接不支持 Azure 说话人分离。")
+        should_use_azure = False
+
     if should_use_azure and not args.force_azure_diarization:
         has_known_speakers = bool(known_speaker_pairs)
         has_known_names = bool(known_speaker_names)
@@ -393,23 +411,57 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             should_use_azure = False
 
     if should_use_azure:
-        azure_payload = perform_azure_diarization(
-            video_url=args.url,
-            language=args.language,
-            max_speakers=args.max_speakers,
-            known_speakers=known_speaker_pairs,
-            known_speaker_names=known_speaker_names,
-            streaming=args.azure_streaming,
-        )
-        diarization_segments = azure_payload.get("speakers") or []
-        if not transcript_segments:
-            transcript_segments = azure_payload.get("transcript")
-        if not transcript_segments:
-            if transcript_error is not None:
-                raise transcript_error
-            raise RuntimeError("Azure OpenAI 未返回可用的转写结果。")
+        try:
+            azure_payload = perform_azure_diarization(
+                video_url=args.url,
+                language=args.language,
+                max_speakers=args.max_speakers,
+                known_speakers=known_speaker_pairs,
+                known_speaker_names=known_speaker_names,
+                streaming=args.azure_streaming,
+            )
+        except RuntimeError:
+            article_bundle = _maybe_fetch_article_assets(args.url)
+            if article_bundle is not None:
+                transcript_segments = [
+                    dict(segment)
+                    for segment in article_bundle.get("segments", [])
+                    if isinstance(segment, Mapping)
+                ]
+                if transcript_segments:
+                    transcript_error = None
+                    should_use_azure = False
+                else:
+                    article_bundle = None
+            if should_use_azure:
+                if transcript_error is not None:
+                    raise transcript_error
+                raise
+        else:
+            diarization_segments = azure_payload.get("speakers") or []
+            if not transcript_segments:
+                transcript_segments = azure_payload.get("transcript")
+            if not transcript_segments:
+                if transcript_error is not None:
+                    raise transcript_error
+                raise RuntimeError("Azure OpenAI 未返回可用的转写结果。")
+
+    if not transcript_segments and article_bundle is None:
+        article_bundle = _maybe_fetch_article_assets(args.url)
+        if article_bundle is not None:
+            transcript_segments = [
+                dict(segment)
+                for segment in article_bundle.get("segments", [])
+                if isinstance(segment, Mapping)
+            ]
+            if transcript_segments:
+                transcript_error = None
+            else:
+                article_bundle = None
 
     if not transcript_segments:
+        if transcript_error is not None:
+            raise transcript_error
         raise RuntimeError(
             "未能获取字幕数据。请确认视频是否启用字幕，或使用 --azure-diarization 以启用 Azure 转写。"
         )
@@ -420,6 +472,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
 
     summary_bundle: Optional[MutableMapping[str, Any]] = None
     summary_paths: Optional[Mapping[str, str]] = None
+    article_metadata = article_bundle.get("metadata") if article_bundle else None
     if args.azure_summary:
         custom_prompt: Optional[str] = None
         if args.summary_prompt_file:
@@ -428,6 +481,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             merged_segments,
             args.url,
             prompt=custom_prompt,
+            metadata=article_metadata,
         )
         summary_paths = _write_summary_documents(
             args.url,
@@ -454,6 +508,15 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
             payload["estimated_minutes"] = summary_bundle["estimated_minutes"]
     else:
         payload = merged_segments
+
+    if isinstance(payload, MutableMapping) and article_bundle is not None:
+        payload["article_metadata"] = article_bundle.get("metadata")
+        payload["article_assets"] = {
+            "raw_html_path": article_bundle.get("raw_html_path"),
+            "content_path": article_bundle.get("content_path"),
+            "metadata_path": article_bundle.get("metadata_path"),
+            "icon_path": article_bundle.get("icon_path"),
+        }
 
     indent = 2 if args.pretty else None
     json.dump(payload, sys.stdout, indent=indent, ensure_ascii=False)
@@ -1613,6 +1676,7 @@ def generate_translation_summary(
     segments: Sequence[MutableMapping[str, Any]],
     video_url: str,
     prompt: Optional[str] = None,
+    metadata: Optional[Mapping[str, Any]] = None,
 ) -> MutableMapping[str, Any]:
     """Call Azure GPT-5 to translate and summarize ASR segments."""
 
@@ -1692,7 +1756,10 @@ def generate_translation_summary(
         )
         raw_summary = _extract_summary_text(response)
 
-    video_metadata = _fetch_video_metadata(video_url)
+    if metadata is not None:
+        video_metadata = dict(metadata)
+    else:
+        video_metadata = _fetch_video_metadata(video_url)
     return _compose_summary_documents(segments, raw_summary, video_metadata, video_url)
 
 
@@ -2236,6 +2303,274 @@ def _resolve_video_cache_dir(video_url: str) -> str:
     video_dir = os.path.join(cache_base, cache_key)
     os.makedirs(video_dir, exist_ok=True)
     return video_dir
+
+
+def _create_http_client():
+    """Return an httpx.Client instance for fetching web content."""
+
+    try:
+        import httpx
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on env
+        raise RuntimeError("httpx 库未安装。请执行 `pip install httpx`." ) from exc
+
+    return httpx.Client(follow_redirects=True, timeout=30.0)
+
+
+def _normalize_article_text(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text or "")
+    return normalized.strip()
+
+
+class _ArticleHTMLParser(HTMLParser):
+    """Lightweight HTML parser to extract article metadata."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.in_title = False
+        self.title_parts: List[str] = []
+        self.in_heading = False
+        self.heading_parts: List[str] = []
+        self.current_paragraph_tag: Optional[str] = None
+        self.current_paragraph_parts: List[str] = []
+        self.paragraphs: List[str] = []
+        self.description: Optional[str] = None
+        self.icon_href: Optional[str] = None
+        self._ignored_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        tag_lower = tag.lower()
+        if tag_lower in {"script", "style"}:
+            self._ignored_depth += 1
+            return
+        if self._ignored_depth:
+            return
+
+        if tag_lower == "title":
+            self.in_title = True
+            return
+
+        if tag_lower in {"p", "li"}:
+            if self.current_paragraph_tag is None:
+                self.current_paragraph_tag = tag_lower
+                self.current_paragraph_parts = []
+            return
+
+        if tag_lower == "h1":
+            self.in_heading = True
+            self.heading_parts = []
+            return
+
+        if tag_lower == "meta":
+            attr_dict = {key.lower(): value for key, value in attrs if value is not None}
+            content = attr_dict.get("content")
+            if not content:
+                return
+            name = (attr_dict.get("name") or "").lower()
+            prop = (attr_dict.get("property") or "").lower()
+            if name == "description" or prop in {"og:description", "twitter:description"}:
+                self.description = content
+            return
+
+        if tag_lower == "link":
+            attr_dict = {key.lower(): value for key, value in attrs if value is not None}
+            rel_value = (attr_dict.get("rel") or "").lower()
+            href = attr_dict.get("href")
+            if href and "icon" in rel_value:
+                self.icon_href = href
+            return
+
+    def handle_startendtag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag_lower = tag.lower()
+        if tag_lower in {"script", "style"}:
+            if self._ignored_depth:
+                self._ignored_depth -= 1
+            return
+        if self._ignored_depth:
+            return
+
+        if tag_lower == "title":
+            self.in_title = False
+            return
+
+        if tag_lower == self.current_paragraph_tag:
+            text = _normalize_article_text("".join(self.current_paragraph_parts))
+            if text:
+                self.paragraphs.append(text)
+            self.current_paragraph_tag = None
+            self.current_paragraph_parts = []
+            return
+
+        if tag_lower == "h1":
+            self.in_heading = False
+
+    def handle_data(self, data: str) -> None:
+        if self._ignored_depth:
+            return
+        if self.in_title:
+            self.title_parts.append(data)
+        if self.in_heading:
+            self.heading_parts.append(data)
+        if self.current_paragraph_tag is not None:
+            self.current_paragraph_parts.append(data)
+
+
+def _parse_article_html(html_text: str) -> Mapping[str, Any]:
+    parser = _ArticleHTMLParser()
+    parser.feed(html_text)
+    parser.close()
+
+    title = _normalize_article_text("".join(parser.title_parts))
+    if not title and parser.heading_parts:
+        title = _normalize_article_text("".join(parser.heading_parts))
+
+    paragraphs: List[str] = []
+    for text in parser.paragraphs:
+        normalized = _normalize_article_text(text)
+        if normalized:
+            paragraphs.append(normalized)
+
+    return {
+        "title": title,
+        "description": _normalize_article_text(parser.description or ""),
+        "icon_href": parser.icon_href,
+        "paragraphs": paragraphs,
+    }
+
+
+def _infer_icon_extension(icon_url: str, content_type: Optional[str]) -> str:
+    path = urlparse(icon_url).path
+    extension = os.path.splitext(path)[1]
+    if extension:
+        return extension
+
+    if content_type:
+        lowered = content_type.lower()
+        if "png" in lowered:
+            return ".png"
+        if "jpeg" in lowered or "jpg" in lowered:
+            return ".jpg"
+        if "svg" in lowered:
+            return ".svg"
+        if "gif" in lowered:
+            return ".gif"
+    return ".ico"
+
+
+def _download_article_icon(
+    client: Any, icon_href: Optional[str], page_url: str, cache_dir: str
+) -> Optional[str]:
+    if not icon_href:
+        return None
+
+    icon_url = urljoin(page_url, icon_href)
+    try:
+        response = client.get(
+            icon_url,
+            headers={
+                "User-Agent": DEFAULT_YTDLP_USER_AGENT,
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                "Referer": page_url,
+            },
+        )
+        response.raise_for_status()
+    except Exception:  # pragma: no cover - 网络异常
+        return None
+
+    extension = _infer_icon_extension(icon_url, response.headers.get("Content-Type"))
+    filename = f"favicon{extension}"
+    icon_path = os.path.join(cache_dir, filename)
+    try:
+        with open(icon_path, "wb") as icon_file:
+            icon_file.write(response.content)
+    except OSError:  # pragma: no cover - 文件系统异常
+        return None
+
+    return icon_path
+
+
+def fetch_article_assets(video_url: str) -> MutableMapping[str, Any]:
+    """Fetch article content and metadata for non-audio webpages."""
+
+    if not video_url.lower().startswith(("http://", "https://")):
+        raise RuntimeError("仅支持通过 HTTP/HTTPS 访问的网页链接。")
+
+    cache_dir = _resolve_video_cache_dir(video_url)
+    os.makedirs(cache_dir, exist_ok=True)
+
+    with _create_http_client() as client:
+        response = client.get(
+            video_url,
+            headers={
+                "User-Agent": DEFAULT_YTDLP_USER_AGENT,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        response.raise_for_status()
+        html_text = response.text
+
+        if not html_text or not html_text.strip():
+            raise RuntimeError("网页内容为空，无法解析正文。")
+        parsed = _parse_article_html(html_text)
+        icon_path = _download_article_icon(
+            client, parsed.get("icon_href"), video_url, cache_dir
+        )
+
+    raw_html_path = os.path.join(cache_dir, "article_raw.html")
+    with open(raw_html_path, "w", encoding="utf-8") as raw_file:
+        raw_file.write(html_text)
+
+    paragraph_texts = list(parsed.get("paragraphs", []))
+
+    if not paragraph_texts:
+        raise RuntimeError("未能从网页中提取正文文本。")
+
+    segments: List[MutableMapping[str, float | str]] = []
+    for index, paragraph in enumerate(paragraph_texts):
+        start = float(index)
+        end = float(index + 1)
+        segments.append({"start": start, "end": end, "text": paragraph})
+
+    content_path = os.path.join(cache_dir, "article_content.txt")
+    with open(content_path, "w", encoding="utf-8") as content_file:
+        content_file.write("\n\n".join(paragraph_texts))
+
+    metadata: Dict[str, Any] = {
+        "title": parsed.get("title") or paragraph_texts[0][:80],
+        "description": parsed.get("description", ""),
+        "webpage_url": video_url,
+        "source_type": "article",
+    }
+
+    metadata_path = os.path.join(cache_dir, "article_metadata.json")
+    with open(metadata_path, "w", encoding="utf-8") as metadata_file:
+        json.dump(metadata, metadata_file, ensure_ascii=False, indent=2)
+
+    return {
+        "segments": segments,
+        "metadata": metadata,
+        "raw_html_path": raw_html_path,
+        "content_path": content_path,
+        "metadata_path": metadata_path,
+        "icon_path": icon_path,
+        "cache_dir": cache_dir,
+    }
+
+
+def _maybe_fetch_article_assets(video_url: str) -> Optional[Mapping[str, Any]]:
+    try:
+        bundle = fetch_article_assets(video_url)
+    except RuntimeError:
+        return None
+
+    segments = bundle.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return None
+
+    return bundle
 
 
 def _diarization_cache_path(directory: str) -> str:
