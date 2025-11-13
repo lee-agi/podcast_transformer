@@ -16,6 +16,7 @@
 - 当 Azure 暂未返回说话人分段时，会退回空说话人列表并继续使用已有字幕，避免 CLI 直接失败。
 - 若视频已提供带时间轴的字幕，默认直接复用字幕并跳过 Azure 说话人分离，避免冗余的音频下载与 ASR 调用；如需强制执行可添加 `--force-azure-diarization`。
 - 可选调用 Azure GPT-5 Pro（默认部署 `gpt-5-pro`），通过 Responses API 翻译与总结 ASR 片段，可使用 `--summary-prompt-file` 定制提示词。
+- 当视频元数据缺失领域信息时，自动调用 Azure GPT-5 基于生成的摘要推断领域标签，避免默认落入“通用”。
 - 支持通过 `--summary-prompt-file` 指定外部 Prompt 配置文件，无需改动代码即可调整摘要策略。
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
  - 对不支持音频下载的网页文章，会自动抓取正文段落与站点图标，将原始 HTML、解析后的纯文本及元数据缓存为 `article_raw.html`、`article_content.txt`、`article_metadata.json`，并无缝接入摘要流程（覆盖测试见 `test/test_cli_article.py`），摘要默认使用面向文章的专用 Prompt，并可通过 `--article-summary-prompt-file` 单独配置。
@@ -66,6 +67,8 @@ export AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT="gpt-4o-transcribe-diarize"
 # 可选：配置 GPT-5 翻译/总结调用所用的 API 版本与部署名称
 export AZURE_OPENAI_SUMMARY_API_VERSION="2025-01-01-preview"
 export AZURE_OPENAI_SUMMARY_DEPLOYMENT="gpt-5-pro"
+# 可选：指定用于领域推断的部署（默认沿用 AZURE_OPENAI_SUMMARY_DEPLOYMENT 或 llab-gpt-5-pro）
+export AZURE_OPENAI_DOMAIN_DEPLOYMENT="gpt-5-pro"
 # 可选：覆盖 Responses API 基础地址（默认 <AZURE_OPENAI_ENDPOINT>/openai/v1）
 # export AZURE_OPENAI_RESPONSES_BASE_URL="https://your-resource.openai.azure.com/openai/v1"
 ```

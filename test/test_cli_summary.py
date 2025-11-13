@@ -40,17 +40,29 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     ]
 
     captured: Dict[str, Any] = {}
+    requests: list[Dict[str, Any]] = []
 
     class FakeResponses:
         def create(self, **kwargs: Any):
-            captured.update(kwargs)
+            call_index = len(requests)
+            requests.append(kwargs)
+            if call_index == 0:
+                return types.SimpleNamespace(
+                    output=[
+                        types.SimpleNamespace(
+                            content=[types.SimpleNamespace(text="翻译摘要")]
+                        )
+                    ],
+                    output_text="翻译摘要",
+                )
+
             return types.SimpleNamespace(
                 output=[
                     types.SimpleNamespace(
-                        content=[types.SimpleNamespace(text="翻译摘要")]
+                        content=[types.SimpleNamespace(text="科技")]
                     )
                 ],
-                output_text="翻译摘要",
+                output_text="科技",
             )
 
     class FakeClient:
@@ -79,7 +91,7 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     summary = result["summary_markdown"]
     timeline = result["timeline_markdown"]
 
-    expected_heading = "# 【通用】Demo Title-2024-M01"
+    expected_heading = "# 【科技】Demo Title-2024-M01"
     assert summary.splitlines()[0] == expected_heading
     assert "翻译摘要" in summary
     assert "标题：Demo Title" in summary
@@ -87,13 +99,16 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     assert timeline.splitlines()[0] == expected_heading
     assert "Demo Title" in timeline
     assert result["metadata"]["publish_date"] == "2024-01-02"
-    assert result["metadata"]["domain"] == "通用"
+    assert result["metadata"]["domain"] == "科技"
     assert result["total_words"] > 0
     assert result["estimated_minutes"] >= 1
-    assert result["file_base"] == "【通用】DemoTitle-2024-M01"
+    assert result["file_base"] == "【科技】DemoTitle-2024-M01"
     assert captured["init_kwargs"]["base_url"] == "https://example.invalid/openai/v1"
-    assert captured["model"] == "llab-gpt-5-pro"
-    request_input = captured["input"]
+    assert len(requests) == 2
+    summary_request = requests[0]
+    domain_request = requests[1]
+    assert summary_request["model"] == "llab-gpt-5-pro"
+    request_input = summary_request["input"]
     assert isinstance(request_input, list)
     system_msg = request_input[0]
     user_msg = request_input[1]
@@ -105,6 +120,57 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     assert "Hello world" in user_msg["content"][0]["text"]
     assert "00:00:00" in user_msg["content"][0]["text"]
     assert "## 欢迎交流与合作" in summary
+    assert domain_request["model"] == "llab-gpt-5-pro"
+    domain_input = domain_request["input"]
+    assert isinstance(domain_input, list)
+    assert domain_input[0]["content"][0]["text"] == cli.DOMAIN_PROMPT
+    assert domain_input[1]["content"][0]["text"] == "翻译摘要"
+
+
+def test_generate_translation_summary_infers_domain_via_azure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.invalid")
+    monkeypatch.setenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT", "llab-gpt-5-pro")
+    segments = [
+        {"start": 0.0, "end": 1.0, "speaker": "Speaker", "text": "Tech talk"}
+    ]
+
+    requests: list[Dict[str, Any]] = []
+
+    class FakeResponses:
+        def create(self, **kwargs: Any):
+            call_index = len(requests)
+            requests.append(kwargs)
+            if call_index == 0:
+                return types.SimpleNamespace(output_text="摘要内容")
+            return types.SimpleNamespace(output_text="科技")
+
+    class FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.responses = FakeResponses()
+
+    fake_openai = ModuleType("openai")
+    fake_openai.OpenAI = FakeClient  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+
+    monkeypatch.setattr(cli, "_fetch_video_metadata", lambda _url: {})
+
+    result = cli.generate_translation_summary(
+        segments, "https://example.invalid/watch?v=tech"
+    )
+
+    assert requests and len(requests) == 2
+    domain_request = requests[-1]
+    user_content = domain_request["input"][1]["content"][0]["text"]
+    assert user_content == "摘要内容"
+    assert domain_request["input"][0]["content"][0]["text"] == cli.DOMAIN_PROMPT
+    assert "科技" in result["summary_markdown"]
+    heading = result["summary_markdown"].splitlines()[0]
+    assert heading.startswith("# 【科技】")
+    assert result["metadata"]["domain"] == "科技"
+    assert "raw_summary" not in domain_request
 
 
 def test_generate_translation_summary_supports_legacy_chat(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,10 +184,11 @@ def test_generate_translation_summary_supports_legacy_chat(monkeypatch: pytest.M
     ]
 
     captured: Dict[str, Any] = {}
+    requests: list[Dict[str, Any]] = []
 
     class FakeCompletions:
         def create(self, **kwargs: Any) -> Dict[str, Any]:
-            captured.update(kwargs)
+            requests.append(kwargs)
             return {
                 "choices": [
                     {"message": {"content": "旧版摘要"}},
@@ -145,11 +212,17 @@ def test_generate_translation_summary_supports_legacy_chat(monkeypatch: pytest.M
         segments, "https://example.invalid/watch?v=legacy"
     )
 
-    assert captured["model"] == "llab-gpt-5"
-    messages = captured["messages"]
+    assert len(requests) == 2
+    summary_request = requests[0]
+    domain_request = requests[1]
+    assert summary_request["model"] == "llab-gpt-5"
+    messages = summary_request["messages"]
     assert messages[0]["role"] == "system"
     assert messages[1]["role"] == "user"
     assert "Legacy" in messages[1]["content"]
+    domain_messages = domain_request["messages"]
+    assert domain_messages[0]["content"] == cli.DOMAIN_PROMPT
+    assert domain_messages[1]["content"] == "旧版摘要"
     assert "旧版摘要" in result["summary_markdown"]
 
 

@@ -198,6 +198,12 @@ ARTICLE_SUMMARY_PROMPT = '''
 '''
 
 
+DOMAIN_PROMPT = (
+    "你将收到一段中文摘要，请根据内容判断最贴切的领域标签。"
+    "直接输出一个中文标签，避免解释或补充说明。"
+)
+
+
 def _load_dotenv_if_present(explicit_path: Optional[str] = None) -> None:
     """Load environment variables from a dotenv file when available."""
 
@@ -1827,6 +1833,103 @@ def _format_segments_for_summary(
     return "\n".join(lines)
 
 
+def _normalize_domain_tag(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+
+    first_line = text.splitlines()[0].strip()
+    first_line = re.sub(r"^[\s\-\*\u2022\d\.、]+", "", first_line)
+
+    if ":" in first_line or "：" in first_line:
+        parts = re.split(r"[:：]", first_line, maxsplit=1)
+        if len(parts) == 2 and parts[1].strip():
+            first_line = parts[1].strip()
+
+    for separator in ("，", ",", "。", ";", "；"):
+        if separator in first_line:
+            first_line = first_line.split(separator, 1)[0].strip()
+
+    if " " in first_line:
+        first_line = first_line.split(" ", 1)[0].strip()
+
+    return first_line[:32].strip()
+
+
+def _infer_domain_from_summary(raw_summary: str) -> Optional[str]:
+    text = str(raw_summary or "").strip()
+    if not text:
+        return None
+
+    azure_key = os.getenv("AZURE_OPENAI_API_KEY")
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    if not azure_key or not azure_endpoint:
+        return None
+
+    deployment = (
+        os.getenv("AZURE_OPENAI_DOMAIN_DEPLOYMENT")
+        or os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT")
+        or "llab-gpt-5-pro"
+    )
+
+    use_responses = deployment.endswith("-pro") or str(
+        os.getenv("AZURE_OPENAI_USE_RESPONSES", "")
+    ).lower() in {"1", "true", "yes"}
+
+    try:
+        if use_responses:
+            base_url = os.getenv("AZURE_OPENAI_RESPONSES_BASE_URL")
+            if not base_url:
+                base_url = _build_responses_base_url(azure_endpoint)
+
+            from openai import OpenAI
+
+            client = OpenAI(base_url=base_url.rstrip("/"), api_key=azure_key)
+            response = client.responses.create(
+                model=deployment,
+                input=[
+                    {
+                        "role": "system",
+                        "content": [{"type": "input_text", "text": DOMAIN_PROMPT}],
+                    },
+                    {
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}],
+                    },
+                ],
+                max_output_tokens=1024,
+            )
+            content = _extract_responses_text(response)
+        else:
+            summary_api_version = (
+                os.getenv("AZURE_OPENAI_SUMMARY_API_VERSION") or "2025-01-01-preview"
+            )
+
+            from openai import AzureOpenAI
+
+            client = AzureOpenAI(
+                api_key=azure_key,
+                api_version=summary_api_version,
+                azure_endpoint=azure_endpoint,
+            )
+            response = client.chat.completions.create(
+                model=deployment,
+                messages=[
+                    {"role": "system", "content": DOMAIN_PROMPT},
+                    {"role": "user", "content": text},
+                ],
+                max_completion_tokens=1024,
+            )
+            content = _extract_summary_text(response)
+    except Exception:  # pragma: no cover - depends on runtime environment
+        return None
+
+    candidate = _normalize_domain_tag(content)
+    if not candidate:
+        return None
+    return candidate
+
+
 def _compose_summary_documents(
     segments: Sequence[MutableMapping[str, Any]],
     raw_summary: str,
@@ -1867,6 +1970,10 @@ def _compose_summary_documents(
 
     source_url = str(video_metadata.get("webpage_url") or video_url)
     domain = _extract_domain(video_metadata)
+    if domain == "通用":
+        generated_domain = _infer_domain_from_summary(raw_summary)
+        if generated_domain:
+            domain = generated_domain
 
     total_words = _count_words(raw_summary)
     estimated_minutes = max(1, math.ceil(total_words / READING_WORDS_PER_MINUTE))
@@ -1887,11 +1994,8 @@ def _compose_summary_documents(
     summary_lines.append(f"- 预估阅读时长：约 {estimated_minutes} 分钟")
     summary_lines.append(f"- 生成时间：{generated_at}")
     summary_lines.append(f"- 覆盖时长：{formatted_duration}")
-    if speakers:
-        summary_lines.append(f"- 识别说话人：{', '.join(speakers)}")
 
     summary_lines.append("")
-    summary_lines.append("## 模型总结")
     summary_lines.append(raw_summary.strip())
     summary_lines.append("")
     summary_lines.extend(_build_exchange_footer())
@@ -1975,7 +2079,7 @@ def _build_exchange_footer() -> List[str]:
 
     return [
         "## 欢迎交流与合作",
-        "目前主要兴趣是探索agent的真正落地，想进一步交流可加微信（微信号：cleezhang），一些[自我介绍](https://lee-agi.github.io/85ed64eda0/)。",
+        "目前主要兴趣是探索agent的落地，想进一步交流可加微信（cleezhang），一些[自我介绍](https://lee-agi.github.io/85ed64eda0/)。",
         "",
         f"> 本文发表于 {formatted_date}。",
     ]
