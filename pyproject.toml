@@ -3,7 +3,7 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "podcast-transformer"
+name = "any2summary"
 version = "0.1.2"
 description = "CLI 工具：下载并增强 YouTube 播客字幕，支持 Azure OpenAI 转写与总结"
 readme = "README.md"
@@ -21,8 +21,9 @@ dependencies = [
 dev = ["pytest>=8.0.0"]
 
 [project.scripts]
-podcast-transformer = "podcast_transformer.cli:main"
+any2summary = "any2summary.cli:main"
+podcast-transformer = "any2summary.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["podcast_transformer*", "podcast*"]
+include = ["any2summary*", "podcast_transformer*"]

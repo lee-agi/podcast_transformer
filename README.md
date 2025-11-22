@@ -1,6 +1,6 @@
-# podcast_transformer
+# any2summary
 
-`podcast_transformer` 是一个命令行工具，用于从 YouTube 视频中抽取字幕，并可选地调用 Azure OpenAI `gpt-4o-transcribe-diarize` 服务进行说话人分离。输出为包含时间戳、文本与说话人信息的 JSON。
+`any2summary` 是一个命令行工具，用于从 YouTube 视频中抽取字幕，并可选地调用 Azure OpenAI `gpt-4o-transcribe-diarize` 服务进行说话人分离。输出为包含时间戳、文本与说话人信息的 JSON。
 
 ## 功能特性
 
@@ -11,8 +11,8 @@
 - 自动检测超长（超过 Azure 1,500 秒限制）或超大音频并切分成多个片段，逐段提交 Azure，并通过流式返回实时刷新进度条。
 - 通过 `gpt-4o-transcribe-diarize` 返回的说话人分段信息，将不同说话人合并入字幕。
 - 兼容 Azure OpenAI `diarized_json` 响应中 `response.output[*].content` 等多层嵌套结构，自动提取 `segments`/`chunks` 字段，即使 YouTube 无字幕也能利用 Azure 转写结果产出文本。
-- 支持通过 `--azure-streaming/--no-azure-streaming` 控制 Azure 转写是否流式执行；启用时会实时刷新进度条，必要时可设置 `PODCAST_TRANSFORMER_DEBUG_PAYLOAD=1` 输出原始 chunk 便于排查。
-- 摘要 Markdown 会自动复制一份到 `PODCAST_TRANSFORMER_OUTBOX_DIR`（默认 `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox`），便于在 Obsidian 等笔记库中直接浏览。
+- 支持通过 `--azure-streaming/--no-azure-streaming` 控制 Azure 转写是否流式执行；启用时会实时刷新进度条，必要时可设置 `ANY2SUMMARY_DEBUG_PAYLOAD=1` 输出原始 chunk 便于排查。
+- 摘要 Markdown 会自动复制一份到 `ANY2SUMMARY_OUTBOX_DIR`（默认 `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox`），便于在 Obsidian 等笔记库中直接浏览。
 - 当 Azure 暂未返回说话人分段时，会退回空说话人列表并继续使用已有字幕，避免 CLI 直接失败。
 - 若视频已提供带时间轴的字幕，默认直接复用字幕并跳过 Azure 说话人分离，避免冗余的音频下载与 ASR 调用；如需强制执行可添加 `--force-azure-diarization`。
 - 可选调用 Azure GPT-5 Pro（默认部署 `gpt-5-pro`），通过 Responses API 翻译与总结 ASR 片段，可使用 `--summary-prompt-file` 定制提示词。
@@ -21,7 +21,7 @@
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
 - 对不支持音频下载的网页文章，会自动抓取正文段落与站点图标，将原始 HTML、解析后的纯文本及元数据缓存为 `article_raw.html`、`article_content.txt`、`article_metadata.json`，并无缝接入摘要流程（覆盖测试见 `test/test_cli_article.py`），摘要默认使用面向文章的专用 Prompt，并可通过 `--article-summary-prompt-file` 单独配置；即便同时提供 `--summary-prompt-file` 或启用 `--azure-diarization`，文章模式也会忽略这些音频配置以防误用。
 - `--url` 支持以逗号分隔多个链接，CLI 会并发执行完整流程，并按输入顺序逐条输出 JSON 结果；若个别链接失败，会在标准错误流提示 `[URL] 错误信息`。
-- 自动加载工作目录或 `PODCAST_TRANSFORMER_DOTENV` 指向的 `.env` 文件，简化凭据管理。
+- 自动加载工作目录或 `ANY2SUMMARY_DOTENV` 指向的 `.env` 文件，简化凭据管理（仍向下兼容历史的 `PODCAST_TRANSFORMER_*` 环境变量，若需平滑迁移可逐步替换为 `ANY2SUMMARY_*`）。
 - 提供 `--clean-cache` 与 `--check-cache` 选项，方便排查与清理缓存。
 - 命令行输出 JSON，可通过 `--pretty` 选项进行格式化。
 
@@ -30,10 +30,10 @@
 如已发布至 PyPI，可直接执行：
 
 ```bash
-pip install podcast-transformer
+pip install any2summary
 ```
 
-若从源码安装，可在 `podcast_transformer` 目录下运行：
+若从源码安装，可在 `any2summary` 目录下运行：
 
 ```bash
 pip install .
@@ -68,7 +68,6 @@ export AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT="gpt-4o-transcribe-diarize"
 # 可选：配置 GPT-5 翻译/总结调用所用的 API 版本与部署名称
 export AZURE_OPENAI_SUMMARY_API_VERSION="2025-01-01-preview"
 export AZURE_OPENAI_SUMMARY_DEPLOYMENT="gpt-5-pro"
-# 可选：指定用于领域推断的部署（默认沿用 AZURE_OPENAI_SUMMARY_DEPLOYMENT 或 llab-gpt-5-pro）
 export AZURE_OPENAI_DOMAIN_DEPLOYMENT="gpt-5-pro"
 # 可选：覆盖 Responses API 基础地址（默认 <AZURE_OPENAI_ENDPOINT>/openai/v1）
 # export AZURE_OPENAI_RESPONSES_BASE_URL="https://your-resource.openai.azure.com/openai/v1"
@@ -86,7 +85,7 @@ export AZURE_OPENAI_DOMAIN_DEPLOYMENT="gpt-5-pro"
 cp .env.example .env
 ```
 
-也可设置 `PODCAST_TRANSFORMER_DOTENV=/path/to/.env` 指向自定义位置，`run` 函数会在执行时自动读取文件并填充缺失的环境变量（不会覆盖已存在的设置）。
+也可设置 `ANY2SUMMARY_DOTENV=/path/to/.env` 指向自定义位置，`run` 函数会在执行时自动读取文件并填充缺失的环境变量（不会覆盖已存在的设置）。
 
 ## 使用方法
 
@@ -126,7 +125,7 @@ cp .env.example .env
 
 命令会输出缓存路径、存在的文件列表以及 `audio.wav` 是否存在。
 
-音频文件与转换后的 WAV 会缓存于 `~/.cache/podcast_transformer/<video_id>/`（或通过设置 `PODCAST_TRANSFORMER_CACHE_DIR` 自定义位置）；对于非 YouTube 站点，会在缓存目录中包含域名与 URL 哈希前缀，重复执行时同样复用缓存，避免再次下载。
+音频文件与转换后的 WAV 会缓存于 `~/.cache/any2summary/<video_id>/`（或通过设置 `ANY2SUMMARY_CACHE_DIR` 自定义位置）；对于非 YouTube 站点，会在缓存目录中包含域名与 URL 哈希前缀，重复执行时同样复用缓存，避免再次下载。
 
 > 注意：部分视频仅提供其他语言字幕，脚本会尝试自动翻译为 `--language` 指定的语言；如仍无法获取，请使用 `--fallback-language` 指明可用的字幕语言代码（可在报错信息中查看）。
 
@@ -148,11 +147,11 @@ cp .env.example .env
 - 始终保留原始时间线；若原文非中文，先翻译成中文。
 - 长内容会包含 `Abstract`、`Keypoints` 与按主题分段的正文，每段不超过约 300 字。
 - 多人对话按说话人分段，保持第一人称述说；专业名词可带原文注释。
-- 同时会在对应视频缓存目录（例如 `~/.cache/podcast_transformer/youtube/<video_id>/summary.md`）写入一份结构化 Markdown 文件，含封面标题、目录与时间轴表格；CLI 输出会额外返回 `summary_path` 方便调用方读取该文件。
+- 同时会在对应视频缓存目录（例如 `~/.cache/any2summary/youtube/<video_id>/summary.md`）写入一份结构化 Markdown 文件，含封面标题、目录与时间轴表格；CLI 输出会额外返回 `summary_path` 方便调用方读取该文件。
 
 若需调整文案风格，可通过 `AZURE_OPENAI_SUMMARY_DEPLOYMENT` 更换部署，或在调用 CLI 时提供 `--summary-prompt-file` 指向自定义 prompt 文件；保持为空时则回退到内置的 `SUMMARY_PROMPT`。
 
-> 调试提示：若需检查 Azure 分段返回的原始数据，可在命令前设置 `PODCAST_TRANSFORMER_DEBUG_PAYLOAD=1`，缓存目录会生成 `debug_payload_*.json` 供分析。
+> 调试提示：若需检查 Azure 分段返回的原始数据，可在命令前设置 `ANY2SUMMARY_DEBUG_PAYLOAD=1`，缓存目录会生成 `debug_payload_*.json` 供分析。
 
 ### 处理网页文章
 
@@ -185,16 +184,16 @@ CLI 允许一次性处理多个视频或文章链接：
 仓库提供 `Dockerfile`，可通过以下命令构建镜像：
 
 ```bash
-docker build -t podcast-transformer ./podcast_transformer
+docker build -t any2summary ./any2summary
 ```
 
 运行时挂载缓存目录与 `.env`：
 
 ```bash
 docker run --rm \
-  --env-file ./podcast_transformer/.env \
-  -v "$HOME/.cache/podcast_transformer:/app/.cache/podcast_transformer" \
-  podcast-transformer \
+  --env-file ./any2summary/.env \
+  -v "$HOME/.cache/any2summary:/app/.cache/any2summary" \
+  any2summary \
   --url "https://www.youtube.com/watch?v=<video-id>" \
   --language en \
   --pretty
@@ -202,13 +201,13 @@ docker run --rm \
 
 ## 测试
 
-项目根目录（即 `podcast_transformer` 目录）执行：
+项目根目录（即 `any2summary` 目录）执行：
 
 ```bash
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest test/test_cli.py test/test_cli_article.py
 ```
 
-若在其父目录运行，可将路径改为 `pytest podcast_transformer/test/test_cli.py` 等价命令。
+若在其父目录运行，可将路径改为 `pytest any2summary/test/test_cli.py` 等价命令。
 
 ## 限制
 

@@ -11,7 +11,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from podcast_transformer import cli
+from any2summary import cli
 
 
 def _write_silent_wav(path: Path, duration_seconds: float, sample_rate: int = 8000) -> None:

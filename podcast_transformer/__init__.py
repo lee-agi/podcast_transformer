@@ -1,5 +1,5 @@
-"""Public package interface for podcast_transformer."""
+"""Compatibility shim for the legacy `podcast_transformer` package name."""
 
-from .cli import main, run
+from any2summary import main, run
 
 __all__ = ["main", "run"]

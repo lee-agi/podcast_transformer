@@ -9,10 +9,10 @@ from types import SimpleNamespace
 
 import pytest
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "podcast_transformer"
+PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "any2summary"
 sys.path.insert(0, str(PACKAGE_ROOT))
 
-from podcast_transformer import cli
+from any2summary import cli
 
 
 def test_convert_audio_to_wav_requests_pcm(monkeypatch: pytest.MonkeyPatch) -> None:

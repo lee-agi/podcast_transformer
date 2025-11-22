@@ -13,7 +13,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from podcast_transformer import cli
+from any2summary import cli
 
 
 class FakeDownloadError(Exception):
@@ -74,7 +74,7 @@ def test_download_audio_stream_injects_headers(monkeypatch: pytest.MonkeyPatch, 
 
     monkeypatch.setitem(sys.modules, "yt_dlp", fake_module)
     monkeypatch.setitem(sys.modules, "yt_dlp.utils", utils_module)
-    monkeypatch.setenv("PODCAST_TRANSFORMER_YTDLP_COOKIES", str(cookie_file))
+    monkeypatch.setenv("ANY2SUMMARY_YTDLP_COOKIES", str(cookie_file))
 
     result = cli.download_audio_stream(target_url, str(tmp_path))
 
@@ -141,7 +141,7 @@ def test_download_audio_stream_android_fallback(
 
     monkeypatch.setitem(sys.modules, "yt_dlp", fake_module)
     monkeypatch.setitem(sys.modules, "yt_dlp.utils", utils_module)
-    monkeypatch.delenv("PODCAST_TRANSFORMER_YTDLP_COOKIES", raising=False)
+    monkeypatch.delenv("ANY2SUMMARY_YTDLP_COOKIES", raising=False)
 
     result = cli.download_audio_stream(target_url, str(tmp_path))
 

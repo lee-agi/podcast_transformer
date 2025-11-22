@@ -10,10 +10,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md /app/
+COPY any2summary /app/any2summary
 COPY podcast_transformer /app/podcast_transformer
 COPY requirements.txt /app/requirements.txt
 
 RUN pip install --no-cache-dir --upgrade pip \ 
     && pip install --no-cache-dir .
 
-ENTRYPOINT ["podcast-transformer"]
+ENTRYPOINT ["any2summary"]

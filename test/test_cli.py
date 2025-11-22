@@ -1,4 +1,4 @@
-"""Test suite for podcast_transformer CLI tool."""
+"""Test suite for any2summary CLI tool."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ PACKAGE_ROOT = os.path.dirname(PROJECT_ROOT)
 if PACKAGE_ROOT not in sys.path:
     sys.path.insert(0, PACKAGE_ROOT)
 
-import podcast_transformer.cli as cli
+import any2summary.cli as cli
 
 
 def test_cli_outputs_transcript_with_speaker_annotations(monkeypatch, capsys):
@@ -204,7 +204,7 @@ def test_prepare_audio_uses_cache(monkeypatch, tmp_path):
 
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(cache_dir))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(cache_dir))
 
     video_url = "https://youtu.be/example"
     video_id = cli.extract_video_id(video_url)
@@ -240,7 +240,7 @@ def test_prepare_audio_uses_cache(monkeypatch, tmp_path):
 def test_resolve_video_cache_dir_non_youtube(monkeypatch, tmp_path):
     """非 YouTube URL 应使用稳定哈希目录。"""
 
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
 
     url = "https://www.bilibili.com/video/BV1xx411c7mD?p=2"
     cache_dir = cli._resolve_video_cache_dir(url)
@@ -268,7 +268,7 @@ def test_parse_known_speakers_invalid():
 def test_cli_clean_cache_removes_cached_directory(monkeypatch, tmp_path, capsys):
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(cache_root))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(cache_root))
 
     url = "https://www.youtube.com/watch?v=exampleid"
     video_dir = cache_root / "exampleid"
@@ -308,7 +308,7 @@ def test_cli_loads_env_file(monkeypatch, tmp_path):
 
     monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
-    monkeypatch.setenv("PODCAST_TRANSFORMER_DOTENV", str(dotenv_path))
+    monkeypatch.setenv("ANY2SUMMARY_DOTENV", str(dotenv_path))
 
     def fake_fetch_transcript(*_args, **_kwargs):
         return [{"start": 0.0, "end": 1.0, "text": "Hello"}]
@@ -332,7 +332,7 @@ def test_cli_loads_env_file(monkeypatch, tmp_path):
 def test_cli_check_cache_reports_status(monkeypatch, tmp_path, capsys):
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(cache_root))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(cache_root))
 
     url = "https://youtu.be/check"
     video_dir = Path(cli._resolve_video_cache_dir(url))

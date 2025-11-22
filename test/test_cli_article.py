@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from podcast_transformer import cli
+from any2summary import cli
 
 
 class _FakeResponse:
@@ -96,7 +96,7 @@ def test_fetch_article_assets_writes_cache(
     def fake_client_factory() -> _FakeHttpClient:
         return _FakeHttpClient(responses)
 
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(
         cli, "_create_http_client", lambda: fake_client_factory(), raising=False
     )
@@ -134,7 +134,7 @@ def test_cli_processes_article_summary(
 
     target_url = "https://www.example.com/posts/demo"
 
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
 
     def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         raise RuntimeError("unable to fetch transcript")
@@ -215,7 +215,7 @@ def test_cli_article_custom_prompt_file(
     custom_prompt_text = "# 自定义文章 Prompt"
     article_prompt_path.write_text(custom_prompt_text, encoding="utf-8")
 
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
 
     def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         raise RuntimeError("unable to fetch transcript")
@@ -293,7 +293,7 @@ def test_cli_article_ignores_summary_prompt_file_for_articles(
     summary_prompt_text = "# 自定义音频 Prompt"
     summary_prompt_path.write_text(summary_prompt_text, encoding="utf-8")
 
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
 
     def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         raise RuntimeError("unable to fetch transcript")
@@ -368,7 +368,7 @@ def test_cli_article_disables_azure_diarization_when_article_detected(
     summary_prompt_path = tmp_path / "summary_prompt.txt"
     summary_prompt_path.write_text("# 语音 Prompt", encoding="utf-8")
 
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
 
     def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
         raise RuntimeError("unable to fetch transcript")
@@ -464,7 +464,7 @@ def test_cli_handles_multiple_urls(
         assert fallback_languages == ["en"]
         return [dict(segment) for segment in transcripts[video_url]]
 
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
     def fake_article_assets(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("no article")
@@ -508,7 +508,7 @@ def test_cli_multiple_urls_continues_on_error(
             return [{"start": 0.0, "end": 1.0, "text": "Good."}]
         raise RuntimeError("transcript unavailable")
 
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
     def fake_article_assets_fail(*_args: Any, **_kwargs: Any) -> None:
         raise RuntimeError("no article")

@@ -15,10 +15,10 @@ import pytest
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT))
 
-sys.modules.pop("podcast_transformer", None)
-sys.modules.pop("podcast_transformer.cli", None)
+sys.modules.pop("any2summary", None)
+sys.modules.pop("any2summary.cli", None)
 
-from podcast_transformer import cli
+from any2summary import cli
 
 cli = importlib.reload(cli)
 
@@ -235,7 +235,7 @@ def test_run_with_azure_summary_outputs_summary(
         {"start": 0.0, "end": 1.0, "text": "Hello", "speaker": "Speaker 1"}
     ]
 
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
 
     monkeypatch.setattr(
         cli,
@@ -256,11 +256,12 @@ def test_run_with_azure_summary_outputs_summary(
     }
 
     outbox_dir = tmp_path / "outbox"
-    monkeypatch.setenv("PODCAST_TRANSFORMER_OUTBOX_DIR", str(outbox_dir))
+    monkeypatch.setenv("ANY2SUMMARY_OUTBOX_DIR", str(outbox_dir))
     def fake_generate_summary(
         provided_segments: Any,
         url: str,
         prompt: str | None = None,
+        metadata: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         return fake_bundle
 
@@ -311,7 +312,7 @@ def test_run_with_custom_summary_prompt_file(
         {"start": 0.0, "end": 1.0, "text": "Hi", "speaker": "Speaker"}
     ]
 
-    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
 
     prompt_file = tmp_path / "prompt.txt"
     prompt_file.write_text("自定义系统提示", encoding="utf-8")
@@ -337,6 +338,7 @@ def test_run_with_custom_summary_prompt_file(
         provided_segments: Any,
         url: str,
         prompt: str | None = None,
+        metadata: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         captured_prompt["prompt"] = prompt
         return fake_bundle
@@ -366,7 +368,7 @@ def test_write_summary_documents_copies_to_default_outbox_and_adds_suffix(monkey
 
     default_outbox = tmp_path / "outbox"
     monkeypatch.setattr(cli, "DEFAULT_OUTBOX_DIR", str(default_outbox))
-    monkeypatch.delenv("PODCAST_TRANSFORMER_OUTBOX_DIR", raising=False)
+    monkeypatch.delenv("ANY2SUMMARY_OUTBOX_DIR", raising=False)
     monkeypatch.setattr(
         cli,
         "_resolve_video_cache_dir",

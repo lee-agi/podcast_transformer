@@ -45,4 +45,4 @@ if printf '%s\n' "$@" | grep -F -q -- "--azure-diarization"; then
   fi
 fi
 
-exec "${VENV_DIR}/bin/python" -m podcast_transformer.cli "$@"
+exec "${VENV_DIR}/bin/python" -m any2summary.cli "$@"
