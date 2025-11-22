@@ -20,6 +20,7 @@
 - 支持通过 `--summary-prompt-file` 指定外部 Prompt 配置文件，无需改动代码即可调整摘要策略。
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
 - 对不支持音频下载的网页文章，会自动抓取正文段落与站点图标，将原始 HTML、解析后的纯文本及元数据缓存为 `article_raw.html`、`article_content.txt`、`article_metadata.json`，并无缝接入摘要流程（覆盖测试见 `test/test_cli_article.py`），摘要默认使用面向文章的专用 Prompt，并可通过 `--article-summary-prompt-file` 单独配置；即便同时提供 `--summary-prompt-file` 或启用 `--azure-diarization`，文章模式也会忽略这些音频配置以防误用。
+- 针对 Apple Podcasts（`podcasts.apple.com`）等音频播客链接，即使未显式添加 `--azure-diarization` 也会自动启用 Azure 说话人分离流程并下载音频，只要 Azure 凭据可用即可沿用默认 `prompts/summary_prompt.txt` 生成摘要。
 - `--url` 支持以逗号分隔多个链接，CLI 会并发执行完整流程，并按输入顺序逐条输出 JSON 结果；若个别链接失败，会在标准错误流提示 `[URL] 错误信息`。
 - 自动加载工作目录或 `ANY2SUMMARY_DOTENV` 指向的 `.env` 文件，简化凭据管理（仍向下兼容历史的 `PODCAST_TRANSFORMER_*` 环境变量，若需平滑迁移可逐步替换为 `ANY2SUMMARY_*`）。
 - 提供 `--clean-cache` 与 `--check-cache` 选项，方便排查与清理缓存。
@@ -155,7 +156,7 @@ cp .env.example .env
 
 ### 处理网页文章
 
-若传入的 URL 属于博客/文档网页且 `yt_dlp` 无法提取音频，CLI 会改为抓取网页正文及站点图标，并将内容拆分为段落 `segments` 供后续摘要使用；相关缓存文件位于对应缓存目录下的 `article_raw.html`、`article_content.txt` 与 `article_metadata.json`。此流程与 Azure 摘要无缝衔接，因此可直接对文章链接执行 `--azure-summary` 获取翻译与总结，默认采用专门为文章设计的 Prompt（可通过 `--article-summary-prompt-file` 指定单独的文章 Prompt；文章模式会忽略 `--summary-prompt-file` 与 `--azure-diarization`，后者仅用于视频/音频链接）。
+若传入的 URL 属于博客/文档网页且 `yt_dlp` 无法提取音频，CLI 会改为抓取网页正文及站点图标，并将内容拆分为段落 `segments` 供后续摘要使用；相关缓存文件位于对应缓存目录下的 `article_raw.html`、`article_content.txt` 与 `article_metadata.json`。此流程与 Azure 摘要无缝衔接，因此可直接对文章链接执行 `--azure-summary` 获取翻译与总结，默认采用专门为文章设计的 Prompt（可通过 `--article-summary-prompt-file` 指定单独的文章 Prompt；文章模式会忽略 `--summary-prompt-file` 与 `--azure-diarization`，后者仅用于视频/音频链接）。Apple Podcasts 等音频源会自动跳过此分支，直接下载音频并走 Azure 话者分离流程。
 
 ### 处理多个 URL
 

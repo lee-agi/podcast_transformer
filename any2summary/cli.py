@@ -186,9 +186,16 @@ _MEDIA_HOST_SUFFIXES = (
     "soundcloud.com",
     "music.apple.com",
     "podcasts.apple.com",
+    "podcast.apple.com",
     "spotify.com",
+    "open.spotify.com",
     "podcasters.spotify.com",
 )
+_FORCED_AUDIO_HOST_SUFFIXES = (
+    "podcasts.apple.com",
+    "podcast.apple.com",
+)
+_MEDIA_PATH_EXTENSIONS = (".mp3", ".m4a", ".aac", ".wav", ".flac")
 
 
 SUMMARY_PROMPT = '''
@@ -450,7 +457,9 @@ def _clone_args(args: argparse.Namespace, url: str) -> argparse.Namespace:
 
 
 def _run_single(args: argparse.Namespace) -> int:
-    if args.force_azure_diarization and not args.azure_diarization:
+    auto_force_azure = _should_force_azure_transcription(args.url)
+
+    if args.force_azure_diarization and not (args.azure_diarization or auto_force_azure):
         raise RuntimeError(
             "--force-azure-diarization 需要与 --azure-diarization 一起使用。"
         )
@@ -523,7 +532,7 @@ def _run_single(args: argparse.Namespace) -> int:
     diarization_segments: Optional[List[MutableMapping[str, float | str]]] = None
     azure_payload: Optional[MutableMapping[str, Any]] = None
 
-    should_use_azure = bool(args.azure_diarization)
+    should_use_azure = bool(args.azure_diarization or auto_force_azure)
     if article_bundle is not None:
         if args.force_azure_diarization:
             raise RuntimeError("网页链接不支持 Azure 说话人分离。")
@@ -3200,24 +3209,45 @@ def _is_youtube_hostname(hostname: str) -> bool:
     return hostname == "www.youtube.com"
 
 
+def _matches_host_suffix(hostname: str, suffix: str) -> bool:
+    hostname = hostname.lower()
+    check = suffix.lower().lstrip(".")
+    if not check:
+        return False
+    return hostname == check or hostname.endswith(f".{check}")
+
+
+def _is_media_source_url(video_url: str) -> bool:
+    parsed = urlparse(video_url)
+    hostname = (parsed.hostname or "").lower()
+    if hostname:
+        for suffix in _MEDIA_HOST_SUFFIXES:
+            if _matches_host_suffix(hostname, suffix):
+                return True
+    path = parsed.path.lower()
+    for extension in _MEDIA_PATH_EXTENSIONS:
+        if path.endswith(extension):
+            return True
+    return False
+
+
 def _is_probable_article_url(video_url: str) -> bool:
     """Heuristically determine whether a URL points to a webpage article."""
+
+    return not _is_media_source_url(video_url)
+
+
+def _should_force_azure_transcription(video_url: str) -> bool:
+    """Return True when URL belongs to audio sources that require Azure pipeline."""
 
     parsed = urlparse(video_url)
     hostname = (parsed.hostname or "").lower()
     if not hostname:
-        return True
-    for suffix in _MEDIA_HOST_SUFFIXES:
-        normalized = suffix.lower()
-        if hostname == normalized:
-            return False
-        if normalized.startswith("."):
-            check = normalized[1:]
-        else:
-            check = normalized
-        if hostname.endswith(f".{check}"):
-            return False
-    return True
+        return False
+    for suffix in _FORCED_AUDIO_HOST_SUFFIXES:
+        if _matches_host_suffix(hostname, suffix):
+            return True
+    return False
 
 
 def _default_referer_for_url(parsed: ParseResult, is_youtube: bool) -> str:

@@ -22,8 +22,7 @@ dev = ["pytest>=8.0.0"]
 
 [project.scripts]
 any2summary = "any2summary.cli:main"
-podcast-transformer = "any2summary.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["any2summary*", "podcast_transformer*"]
+include = ["any2summary*"]

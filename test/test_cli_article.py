@@ -438,6 +438,64 @@ def test_cli_article_disables_azure_diarization_when_article_detected(
     json.loads(capsys.readouterr().out)
 
 
+def test_cli_podcast_url_prefers_media_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Apple Podcasts 链接应触发音频流程并使用 SUMMARY_PROMPT。"""
+
+    target_url = (
+        "https://podcasts.apple.com/cn/podcast/demo/id1634356920?i=1000726193755"
+    )
+
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
+
+    def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("no captions")
+
+    azure_called = {"count": 0}
+
+    def fake_diarization(*_args: Any, **_kwargs: Any) -> Dict[str, Any]:
+        azure_called["count"] += 1
+        return {
+            "speakers": [],
+            "transcript": [
+                {"start": 0.0, "end": 1.0, "text": "Podcast intro."},
+            ],
+        }
+
+    def fail_article(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover
+        raise AssertionError("podcast URL should not fetch article assets")
+
+    summary_payload = {
+        "summary_markdown": "# Summary\n",
+        "timeline_markdown": "## Timeline\n",
+        "metadata": {"title": "Podcast"},
+        "file_base": "podcast",
+    }
+
+    def fake_generate_summary(
+        segments: list[dict[str, Any]],
+        video_url: str,
+        prompt: str | None = None,
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        assert prompt != cli.ARTICLE_SUMMARY_PROMPT
+        assert video_url == target_url
+        assert segments[0]["text"] == "Podcast intro."
+        return summary_payload
+
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+    monkeypatch.setattr(cli, "perform_azure_diarization", fake_diarization)
+    monkeypatch.setattr(cli, "fetch_article_assets", fail_article)
+    monkeypatch.setattr(cli, "generate_translation_summary", fake_generate_summary)
+
+    exit_code = cli.run(["--url", target_url, "--azure-summary"])
+
+    assert exit_code == 0
+    assert azure_called["count"] == 1
+    json.loads(capsys.readouterr().out)
+
+
 def test_cli_handles_multiple_urls(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

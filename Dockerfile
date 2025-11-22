@@ -11,7 +11,6 @@ RUN apt-get update \
 
 COPY pyproject.toml README.md /app/
 COPY any2summary /app/any2summary
-COPY podcast_transformer /app/podcast_transformer
 COPY requirements.txt /app/requirements.txt
 
 RUN pip install --no-cache-dir --upgrade pip \ 

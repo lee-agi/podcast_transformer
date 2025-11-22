@@ -2,10 +2,10 @@
 .venv
 AGENTS.md
 WARP.md
-podcast_transformer/__pycache__/
+any2summary/__pycache__/
 test/__pycache__/
 build/
-podcast_transformer.egg-info/
+any2summary.egg-info/
 cookies.txt
 .vscode
 .env
