@@ -19,7 +19,8 @@
 - 当视频元数据缺失领域信息时，自动调用 Azure GPT-5 基于生成的摘要推断领域标签，避免默认落入“通用”。
 - 支持通过 `--summary-prompt-file` 指定外部 Prompt 配置文件，无需改动代码即可调整摘要策略。
 - 摘要结果以标准 Markdown 格式输出，包含封面、目录与时间轴表格，并自动写入缓存目录的 `summary.md` 文件。
- - 对不支持音频下载的网页文章，会自动抓取正文段落与站点图标，将原始 HTML、解析后的纯文本及元数据缓存为 `article_raw.html`、`article_content.txt`、`article_metadata.json`，并无缝接入摘要流程（覆盖测试见 `test/test_cli_article.py`），摘要默认使用面向文章的专用 Prompt，并可通过 `--article-summary-prompt-file` 单独配置。
+- 对不支持音频下载的网页文章，会自动抓取正文段落与站点图标，将原始 HTML、解析后的纯文本及元数据缓存为 `article_raw.html`、`article_content.txt`、`article_metadata.json`，并无缝接入摘要流程（覆盖测试见 `test/test_cli_article.py`），摘要默认使用面向文章的专用 Prompt，并可通过 `--article-summary-prompt-file` 单独配置；即便同时提供 `--summary-prompt-file` 或启用 `--azure-diarization`，文章模式也会忽略这些音频配置以防误用。
+- `--url` 支持以逗号分隔多个链接，CLI 会并发执行完整流程，并按输入顺序逐条输出 JSON 结果；若个别链接失败，会在标准错误流提示 `[URL] 错误信息`。
 - 自动加载工作目录或 `PODCAST_TRANSFORMER_DOTENV` 指向的 `.env` 文件，简化凭据管理。
 - 提供 `--clean-cache` 与 `--check-cache` 选项，方便排查与清理缓存。
 - 命令行输出 JSON，可通过 `--pretty` 选项进行格式化。
@@ -155,7 +156,19 @@ cp .env.example .env
 
 ### 处理网页文章
 
-若传入的 URL 属于博客/文档网页且 `yt_dlp` 无法提取音频，CLI 会改为抓取网页正文及站点图标，并将内容拆分为段落 `segments` 供后续摘要使用；相关缓存文件位于对应缓存目录下的 `article_raw.html`、`article_content.txt` 与 `article_metadata.json`。此流程与 Azure 摘要无缝衔接，因此可直接对文章链接执行 `--azure-summary` 获取翻译与总结，默认采用专门为文章设计的 Prompt（可通过 `--article-summary-prompt-file` 指定单独的文章 Prompt；若提供 `--summary-prompt-file` 则仍以自定义 Prompt 为准）。
+若传入的 URL 属于博客/文档网页且 `yt_dlp` 无法提取音频，CLI 会改为抓取网页正文及站点图标，并将内容拆分为段落 `segments` 供后续摘要使用；相关缓存文件位于对应缓存目录下的 `article_raw.html`、`article_content.txt` 与 `article_metadata.json`。此流程与 Azure 摘要无缝衔接，因此可直接对文章链接执行 `--azure-summary` 获取翻译与总结，默认采用专门为文章设计的 Prompt（可通过 `--article-summary-prompt-file` 指定单独的文章 Prompt；文章模式会忽略 `--summary-prompt-file` 与 `--azure-diarization`，后者仅用于视频/音频链接）。
+
+### 处理多个 URL
+
+CLI 允许一次性处理多个视频或文章链接：
+
+```bash
+./setup_and_run.sh \
+  --url "https://example.com/a,https://example.com/b" \
+  --language en
+```
+
+多个任务会并发执行，并按照输入顺序逐条输出 JSON；若个别链接失败，会在标准错误流输出 `[URL] 错误信息`，其余链接继续完成。
 
 ## 示例脚本
 

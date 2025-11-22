@@ -9,9 +9,12 @@ emits JSON to stdout.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import contextlib
+import copy
 import base64
 import hashlib
+import io
 import json
 import math
 import os
@@ -353,6 +356,74 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
 
     _load_dotenv_if_present(os.getenv("PODCAST_TRANSFORMER_DOTENV"))
 
+    raw_urls = [item.strip() for item in args.url.split(",") if item and item.strip()]
+    if not raw_urls:
+        raise RuntimeError("--url 参数不能为空。")
+
+    if len(raw_urls) == 1:
+        args.url = raw_urls[0]
+        return _run_single(args)
+
+    return _run_multiple(args, raw_urls)
+
+
+def _run_multiple(args: argparse.Namespace, urls: Sequence[str]) -> int:
+    clones = [_clone_args(args, url) for url in urls]
+    max_workers = max(1, min(len(clones), os.cpu_count() or len(clones)))
+
+    results: List[Tuple[int, str, int, str, Optional[str]]] = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map: Dict[concurrent.futures.Future[Tuple[int, str, Optional[BaseException]]], Tuple[int, str]] = {}
+        for index, clone in enumerate(clones):
+            future = executor.submit(_run_single_with_capture, clone)
+            future_map[future] = (index, clone.url)
+
+        for future in concurrent.futures.as_completed(future_map):
+            index, url = future_map[future]
+            try:
+                exit_code, output, error = future.result()
+            except Exception as exc:  # pragma: no cover - defensive
+                exit_code = 1
+                output = ""
+                error = str(exc)
+            error_message = str(error) if error else None
+            results.append((index, url, exit_code, output, error_message))
+
+    results.sort(key=lambda item: item[0])
+    final_exit_code = 0
+    for _, url, exit_code, output, error_message in results:
+        if output:
+            if output.endswith("\n"):
+                sys.stdout.write(output)
+            else:
+                sys.stdout.write(output + "\n")
+        if error_message:
+            sys.stderr.write(f"[{url}] {error_message}\n")
+        if exit_code != 0:
+            final_exit_code = 1
+
+    return final_exit_code
+
+
+def _run_single_with_capture(args: argparse.Namespace) -> Tuple[int, str, Optional[str]]:
+    buffer = io.StringIO()
+    error_message: Optional[str] = None
+    try:
+        with contextlib.redirect_stdout(buffer):
+            exit_code = _run_single(args)
+    except Exception as exc:  # pragma: no cover - error path
+        exit_code = 1
+        error_message = str(exc)
+    return exit_code, buffer.getvalue(), error_message
+
+
+def _clone_args(args: argparse.Namespace, url: str) -> argparse.Namespace:
+    cloned = copy.deepcopy(args)
+    cloned.url = url
+    return cloned
+
+
+def _run_single(args: argparse.Namespace) -> int:
     if args.force_azure_diarization and not args.azure_diarization:
         raise RuntimeError(
             "--force-azure-diarization 需要与 --azure-diarization 一起使用。"
@@ -410,7 +481,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     except RuntimeError as exc:
         transcript_error = exc
 
-    if transcript_segments is None and not args.azure_diarization:
+    if transcript_segments is None:
         article_bundle = _maybe_fetch_article_assets(args.url)
         if article_bundle is not None:
             transcript_segments = [
@@ -510,16 +581,15 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     article_metadata = article_bundle.get("metadata") if article_bundle else None
     if args.azure_summary:
         custom_prompt: Optional[str] = None
-        if args.summary_prompt_file:
+        if article_bundle is not None:
+            if args.article_summary_prompt_file:
+                custom_prompt = _load_summary_prompt_file(
+                    args.article_summary_prompt_file
+                )
+            else:
+                custom_prompt = ARTICLE_SUMMARY_PROMPT
+        elif args.summary_prompt_file:
             custom_prompt = _load_summary_prompt_file(args.summary_prompt_file)
-        article_prompt: Optional[str] = None
-        if article_bundle is not None and args.article_summary_prompt_file:
-            article_prompt = _load_summary_prompt_file(
-                args.article_summary_prompt_file
-            )
-            custom_prompt = article_prompt
-        if article_bundle is not None and custom_prompt is None:
-            custom_prompt = ARTICLE_SUMMARY_PROMPT
         summary_bundle = generate_translation_summary(
             merged_segments,
             args.url,

@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import pytest
 
@@ -281,3 +281,256 @@ def test_cli_article_custom_prompt_file(
 
     assert exit_code == 0
     json.loads(capsys.readouterr().out)
+
+
+def test_cli_article_ignores_summary_prompt_file_for_articles(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """文章模式下应忽略 --summary-prompt-file，默认走文章 Prompt。"""
+
+    target_url = "https://www.example.com/posts/prompt"
+    summary_prompt_path = tmp_path / "summary_prompt.txt"
+    summary_prompt_text = "# 自定义音频 Prompt"
+    summary_prompt_path.write_text(summary_prompt_text, encoding="utf-8")
+
+    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+
+    def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("unable to fetch transcript")
+
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+
+    bundle = {
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "Article paragraph."},
+        ],
+        "metadata": {
+            "title": "Article",
+            "webpage_url": target_url,
+        },
+        "raw_html_path": str(tmp_path / "prompt.html"),
+        "content_path": str(tmp_path / "prompt.txt"),
+        "metadata_path": str(tmp_path / "prompt.json"),
+        "icon_path": str(tmp_path / "prompt.png"),
+    }
+
+    (tmp_path / "prompt.html").write_text("raw", encoding="utf-8")
+    (tmp_path / "prompt.txt").write_text("text", encoding="utf-8")
+    (tmp_path / "prompt.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "prompt.png").write_bytes(b"icon")
+
+    monkeypatch.setattr(
+        cli, "fetch_article_assets", lambda url: bundle if url == target_url else None
+    )
+
+    summary_payload = {
+        "summary_markdown": "# Summary\n",
+        "timeline_markdown": "## Timeline\n",
+        "metadata": {"title": "Article"},
+        "file_base": "article",
+    }
+
+    def fake_generate_summary(
+        segments: list[dict[str, Any]],
+        video_url: str,
+        prompt: str | None = None,
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        assert prompt == cli.ARTICLE_SUMMARY_PROMPT
+        assert video_url == target_url
+        assert segments == bundle["segments"]
+        return summary_payload
+
+    monkeypatch.setattr(cli, "generate_translation_summary", fake_generate_summary)
+
+    exit_code = cli.run(
+        [
+            "--url",
+            target_url,
+            "--language",
+            "en",
+            "--azure-summary",
+            "--summary-prompt-file",
+            str(summary_prompt_path),
+        ]
+    )
+
+    assert exit_code == 0
+    json.loads(capsys.readouterr().out)
+
+
+def test_cli_article_disables_azure_diarization_when_article_detected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """即便启用 Azure diarization，也应在文章模式下短路并使用文章 Prompt。"""
+
+    target_url = "https://www.example.com/posts/azure"
+    summary_prompt_path = tmp_path / "summary_prompt.txt"
+    summary_prompt_path.write_text("# 语音 Prompt", encoding="utf-8")
+
+    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+
+    def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("unable to fetch transcript")
+
+    def fail_diarization(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover
+        raise AssertionError("article mode should not invoke Azure diarization")
+
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+    monkeypatch.setattr(cli, "perform_azure_diarization", fail_diarization)
+
+    bundle = {
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "Article paragraph."},
+        ],
+        "metadata": {
+            "title": "Article",
+            "webpage_url": target_url,
+        },
+        "raw_html_path": str(tmp_path / "azure.html"),
+        "content_path": str(tmp_path / "azure.txt"),
+        "metadata_path": str(tmp_path / "azure.json"),
+        "icon_path": str(tmp_path / "azure.png"),
+    }
+
+    (tmp_path / "azure.html").write_text("raw", encoding="utf-8")
+    (tmp_path / "azure.txt").write_text("text", encoding="utf-8")
+    (tmp_path / "azure.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "azure.png").write_bytes(b"icon")
+
+    monkeypatch.setattr(
+        cli, "fetch_article_assets", lambda url: bundle if url == target_url else None
+    )
+
+    summary_payload = {
+        "summary_markdown": "# Summary\n",
+        "timeline_markdown": "## Timeline\n",
+        "metadata": {"title": "Article"},
+        "file_base": "article",
+    }
+
+    def fake_generate_summary(
+        segments: list[dict[str, Any]],
+        video_url: str,
+        prompt: str | None = None,
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        assert prompt == cli.ARTICLE_SUMMARY_PROMPT
+        assert metadata == bundle["metadata"]
+        return summary_payload
+
+    monkeypatch.setattr(cli, "generate_translation_summary", fake_generate_summary)
+
+    exit_code = cli.run(
+        [
+            "--url",
+            target_url,
+            "--language",
+            "en",
+            "--azure-diarization",
+            "--azure-summary",
+            "--summary-prompt-file",
+            str(summary_prompt_path),
+        ]
+    )
+
+    assert exit_code == 0
+    json.loads(capsys.readouterr().out)
+
+
+def test_cli_handles_multiple_urls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """CLI 应支持多个 URL 并保证各自输出。"""
+
+    urls = [
+        "https://example.com/article-1",
+        "https://example.com/article-2",
+    ]
+
+    transcripts = {
+        urls[0]: [
+            {"start": 0.0, "end": 1.0, "text": "First article."},
+        ],
+        urls[1]: [
+            {"start": 0.0, "end": 1.5, "text": "Second article."},
+        ],
+    }
+
+    def fake_fetch_transcript(video_url: str, language: str, fallback_languages: List[str]):
+        assert language == "en"
+        assert fallback_languages == ["en"]
+        return [dict(segment) for segment in transcripts[video_url]]
+
+    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+    def fake_article_assets(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("no article")
+
+    monkeypatch.setattr(cli, "fetch_article_assets", fake_article_assets)
+
+    def fail_diarization(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover - 防御
+        raise AssertionError("Azure diarization should not run")
+
+    monkeypatch.setattr(cli, "perform_azure_diarization", fail_diarization)
+
+    exit_code = cli.run([
+        "--url",
+        ",".join(urls),
+        "--language",
+        "en",
+    ])
+
+    assert exit_code == 0
+    captured = capsys.readouterr()
+    lines = [line for line in captured.out.strip().splitlines() if line]
+    assert len(lines) == 2
+    payload_first = json.loads(lines[0])
+    payload_second = json.loads(lines[1])
+    assert payload_first[0]["text"] == "First article."
+    assert payload_second[0]["text"] == "Second article."
+
+
+def test_cli_multiple_urls_continues_on_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """某个 URL 失败时应继续处理其它 URL 并报告错误。"""
+
+    success_url = "https://example.com/good"
+    fail_url = "https://example.com/bad"
+
+    def fake_fetch_transcript(video_url: str, language: str, fallback_languages: List[str]):
+        if video_url == success_url:
+            return [{"start": 0.0, "end": 1.0, "text": "Good."}]
+        raise RuntimeError("transcript unavailable")
+
+    monkeypatch.setenv("PODCAST_TRANSFORMER_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+    def fake_article_assets_fail(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("no article")
+
+    monkeypatch.setattr(cli, "fetch_article_assets", fake_article_assets_fail)
+
+    def fail_diarization(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover - 防御
+        raise AssertionError("Azure diarization should not run")
+
+    monkeypatch.setattr(cli, "perform_azure_diarization", fail_diarization)
+
+    exit_code = cli.run([
+        "--url",
+        f"{success_url},{fail_url}",
+        "--language",
+        "en",
+    ])
+
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    lines = [line for line in captured.out.strip().splitlines() if line]
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload[0]["text"] == "Good."
+    assert "transcript unavailable" in captured.err
