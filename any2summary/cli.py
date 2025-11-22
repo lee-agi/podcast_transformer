@@ -85,10 +85,7 @@ def _getenv(*keys: str) -> Optional[str]:
 try:
     __CLI_VERSION = metadata.version("any2summary")
 except metadata.PackageNotFoundError:
-    try:
-        __CLI_VERSION = metadata.version("podcast-transformer")
-    except metadata.PackageNotFoundError:
-        __CLI_VERSION = "0.0.0"
+    __CLI_VERSION = "0.0.0"
 
 
 _TIME_START_KEYS = (
