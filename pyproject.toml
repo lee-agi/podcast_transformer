@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "any2summary"
-version = "0.1.2"
-description = "CLI 工具：下载并增强 YouTube 播客字幕，支持 Azure OpenAI 转写与总结"
+version = "0.0.1"
+description = "any2summary is a command-line toolkit that handles the entire pipeline for podcasts, videos, and long-form articles—download, transcription, optional Azure speaker diarization, and Markdown summarization—directly on your local machine. "
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "Lee" }]
