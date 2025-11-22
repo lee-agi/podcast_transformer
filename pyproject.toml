@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "any2summary"
-version = "0.0.1"
+version = "0.0.2"
 description = "any2summary is a command-line toolkit that handles the entire pipeline for podcasts, videos, and long-form articles—download, transcription, optional Azure speaker diarization, and Markdown summarization—directly on your local machine. "
 readme = "README.md"
 requires-python = ">=3.10"

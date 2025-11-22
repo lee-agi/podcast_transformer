@@ -26,6 +26,12 @@
 - `ffmpeg`（macOS 可 `brew install ffmpeg`，Linux/Windows 参考官方文档）
 - 可访问 YouTube / 目标站点与 Azure OpenAI 的网络环境（如需代理，可在 `setup_and_run.sh` 中自定义 `http_proxy/https_proxy`）
 - Azure OpenAI 资源及部署（若需说话人分离或摘要）
+- 在运行 CLI 之前，务必参考 `.env.example` 配置好环境变量（复制为 `.env`，补齐 Azure 凭据，并通过 `ANY2SUMMARY_DOTENV` 或 shell 导入）
+
+### 环境变量
+- 执行 `cp .env.example .env`（或复制到其他路径）后，用真实的 Azure 参数替换示例值，再运行任意命令。
+- `ANY2SUMMARY_DOTENV` 应指向该 `.env` 文件，CLI 与 `run_example.sh` 等脚本会自动读取它。
+- 一旦新增或调整所需的环境变量，记得同步更新 `.env.example` 方便团队共享参考。
 
 ### 安装方式
 1. **PyPI**（推荐）：`pip install any2summary`

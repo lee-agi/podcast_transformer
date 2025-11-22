@@ -26,6 +26,12 @@
 - `ffmpeg` (install via `brew install ffmpeg` on macOS or follow the official docs for other platforms)
 - Network access to YouTube/your target site plus Azure OpenAI (adjust the proxy variables in `setup_and_run.sh` if needed)
 - Azure OpenAI resource and deployments for transcription/summary features
+- Environment variables configured from `.env.example` (copy to `.env`, fill in the required Azure credentials, and export via `ANY2SUMMARY_DOTENV` or your shell before running the CLI)
+
+### Environment Variables
+- Run `cp .env.example .env` (or copy the file to your preferred location) and replace the placeholder Azure values before executing any command.
+- `ANY2SUMMARY_DOTENV` points to the `.env` path that should be auto-loaded; scripts like `run_example.sh` expect this file to exist.
+- Keep `.env.example` up to date when new settings are required so teammates have a canonical reference.
 
 ### Installation Options
 1. **PyPI (recommended):** `pip install any2summary`
