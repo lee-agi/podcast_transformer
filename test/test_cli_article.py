@@ -18,6 +18,22 @@ if str(PROJECT_ROOT) not in sys.path:
 from any2summary import cli
 
 
+def _decode_json_stream(raw: str) -> list[Any]:
+    decoder = json.JSONDecoder()
+    items: list[Any] = []
+    index = 0
+    length = len(raw)
+    while index < length:
+        while index < length and raw[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        obj, offset = decoder.raw_decode(raw, index)
+        items.append(obj)
+        index = offset
+    return items
+
+
 class _FakeResponse:
     """轻量级 HTTP 响应对象，模拟 httpx.Response。"""
 
@@ -187,7 +203,7 @@ def test_cli_processes_article_summary(
         assert video_url == target_url
         assert segments == bundle["segments"]
         assert metadata == bundle["metadata"]
-        assert prompt == cli.ARTICLE_SUMMARY_PROMPT
+        assert prompt == cli._load_default_article_prompt()
         return summary_payload
 
     monkeypatch.setattr(cli, "generate_translation_summary", fake_generate_summary)
@@ -336,7 +352,7 @@ def test_cli_article_ignores_summary_prompt_file_for_articles(
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        assert prompt == cli.ARTICLE_SUMMARY_PROMPT
+        assert prompt == cli._load_default_article_prompt()
         assert video_url == target_url
         assert segments == bundle["segments"]
         return summary_payload
@@ -357,6 +373,80 @@ def test_cli_article_ignores_summary_prompt_file_for_articles(
 
     assert exit_code == 0
     json.loads(capsys.readouterr().out)
+
+
+def test_cli_article_uses_default_article_prompt_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target_url = "https://www.example.com/posts/default-prompt"
+    default_prompt_path = tmp_path / "article_prompt.txt"
+    default_prompt_text = "# 默认文章 Prompt"
+    default_prompt_path.write_text(default_prompt_text, encoding="utf-8")
+
+    monkeypatch.setattr(cli, "DEFAULT_ARTICLE_PROMPT_PATH", default_prompt_path)
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
+
+    def fake_fetch_transcript(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise RuntimeError("unable to fetch transcript")
+
+    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
+
+    bundle = {
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "Article paragraph."},
+        ],
+        "metadata": {
+            "title": "Article",
+            "webpage_url": target_url,
+        },
+        "raw_html_path": str(tmp_path / "default.html"),
+        "content_path": str(tmp_path / "default.txt"),
+        "metadata_path": str(tmp_path / "default.json"),
+        "icon_path": str(tmp_path / "default.png"),
+    }
+
+    (tmp_path / "default.html").write_text("raw", encoding="utf-8")
+    (tmp_path / "default.txt").write_text("text", encoding="utf-8")
+    (tmp_path / "default.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "default.png").write_bytes(b"icon")
+
+    monkeypatch.setattr(
+        cli, "fetch_article_assets", lambda url: bundle if url == target_url else None
+    )
+
+    summary_payload = {
+        "summary_markdown": "# Summary\n",
+        "timeline_markdown": "## Timeline\n",
+        "metadata": {"title": "Article"},
+        "file_base": "article",
+    }
+
+    captured_prompt: Dict[str, Any] = {}
+
+    def fake_generate_summary(
+        segments: list[dict[str, Any]],
+        video_url: str,
+        prompt: str | None = None,
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        captured_prompt["prompt"] = prompt
+        return summary_payload
+
+    monkeypatch.setattr(cli, "generate_translation_summary", fake_generate_summary)
+
+    exit_code = cli.run(
+        [
+            "--url",
+            target_url,
+            "--language",
+            "en",
+            "--azure-summary",
+        ]
+    )
+
+    assert exit_code == 0
+    json.loads(capsys.readouterr().out)
+    assert captured_prompt["prompt"] == default_prompt_text
 
 
 def test_cli_article_disables_azure_diarization_when_article_detected(
@@ -415,7 +505,7 @@ def test_cli_article_disables_azure_diarization_when_article_detected(
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        assert prompt == cli.ARTICLE_SUMMARY_PROMPT
+        assert prompt == cli._load_default_article_prompt()
         assert metadata == bundle["metadata"]
         return summary_payload
 
@@ -427,7 +517,7 @@ def test_cli_article_disables_azure_diarization_when_article_detected(
             target_url,
             "--language",
             "en",
-            "--azure-diarization",
+            "--force-azure-diarization",
             "--azure-summary",
             "--summary-prompt-file",
             str(summary_prompt_path),
@@ -479,7 +569,7 @@ def test_cli_podcast_url_prefers_media_prompt(
         prompt: str | None = None,
         metadata: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        assert prompt != cli.ARTICLE_SUMMARY_PROMPT
+        assert prompt != cli._load_default_article_prompt()
         assert video_url == target_url
         assert segments[0]["text"] == "Podcast intro."
         return summary_payload
@@ -529,8 +619,8 @@ def test_cli_handles_multiple_urls(
 
     monkeypatch.setattr(cli, "fetch_article_assets", fake_article_assets)
 
-    def fail_diarization(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover - 防御
-        raise AssertionError("Azure diarization should not run")
+    def fail_diarization(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("azure failed")
 
     monkeypatch.setattr(cli, "perform_azure_diarization", fail_diarization)
 
@@ -543,10 +633,9 @@ def test_cli_handles_multiple_urls(
 
     assert exit_code == 0
     captured = capsys.readouterr()
-    lines = [line for line in captured.out.strip().splitlines() if line]
-    assert len(lines) == 2
-    payload_first = json.loads(lines[0])
-    payload_second = json.loads(lines[1])
+    payloads = _decode_json_stream(captured.out)
+    assert len(payloads) == 2
+    payload_first, payload_second = payloads
     assert payload_first[0]["text"] == "First article."
     assert payload_second[0]["text"] == "Second article."
 
@@ -573,8 +662,8 @@ def test_cli_multiple_urls_continues_on_error(
 
     monkeypatch.setattr(cli, "fetch_article_assets", fake_article_assets_fail)
 
-    def fail_diarization(*_args: Any, **_kwargs: Any) -> None:  # pragma: no cover - 防御
-        raise AssertionError("Azure diarization should not run")
+    def fail_diarization(*_args: Any, **_kwargs: Any) -> None:
+        raise RuntimeError("azure failed")
 
     monkeypatch.setattr(cli, "perform_azure_diarization", fail_diarization)
 
@@ -587,8 +676,8 @@ def test_cli_multiple_urls_continues_on_error(
 
     assert exit_code == 1
     captured = capsys.readouterr()
-    lines = [line for line in captured.out.strip().splitlines() if line]
-    assert len(lines) == 1
-    payload = json.loads(lines[0])
+    payloads = _decode_json_stream(captured.out)
+    assert len(payloads) == 1
+    payload = payloads[0]
     assert payload[0]["text"] == "Good."
     assert "transcript unavailable" in captured.err

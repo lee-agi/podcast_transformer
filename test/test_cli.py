@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-from pathlib import Path
 from typing import List
 
 import pytest
@@ -61,7 +60,6 @@ def test_cli_outputs_transcript_with_speaker_annotations(monkeypatch, capsys):
         "https://youtu.be/example",
         "--language",
         "en",
-        "--azure-diarization",
         "--force-azure-diarization",
     ])
 
@@ -111,7 +109,6 @@ def test_cli_fallbacks_to_azure_transcription(monkeypatch, capsys):
         "https://youtu.be/example",
         "--language",
         "en",
-        "--azure-diarization",
     ])
 
     assert exit_code == 0
@@ -142,15 +139,12 @@ def test_cli_skips_azure_when_captions_available(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "perform_azure_diarization", fake_perform)
 
-    exit_code = cli.run(
-        [
-            "--url",
-            "https://youtu.be/example",
-            "--language",
-            "en",
-            "--azure-diarization",
-        ]
-    )
+    exit_code = cli.run([
+        "--url",
+        "https://youtu.be/example",
+        "--language",
+        "en",
+    ])
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
@@ -188,7 +182,6 @@ def test_cli_force_azure_diarization_invokes_azure(monkeypatch, capsys):
             "https://youtu.be/example",
             "--language",
             "en",
-            "--azure-diarization",
             "--force-azure-diarization",
         ]
     )
@@ -311,51 +304,22 @@ def test_cli_loads_env_file(monkeypatch, tmp_path):
     monkeypatch.setenv("ANY2SUMMARY_DOTENV", str(dotenv_path))
 
     def fake_fetch_transcript(*_args, **_kwargs):
-        return [{"start": 0.0, "end": 1.0, "text": "Hello"}]
+        raise RuntimeError("transcript unavailable")
 
     def fake_perform_diarization(*_args, **_kwargs):
         assert os.getenv("AZURE_OPENAI_API_KEY") == "dotenv-key"
         assert os.getenv("AZURE_OPENAI_ENDPOINT") == "https://example.invalid"
         return {
             "speakers": [{"start": 0.0, "end": 1.0, "speaker": "Speaker"}],
-            "transcript": None,
+            "transcript": [{"start": 0.0, "end": 1.0, "text": "Azure"}],
         }
 
     monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fake_fetch_transcript)
     monkeypatch.setattr(cli, "perform_azure_diarization", fake_perform_diarization)
 
-    exit_code = cli.run(["--url", "https://youtu.be/env", "--azure-diarization"])
+    exit_code = cli.run(["--url", "https://youtu.be/env"])
 
     assert exit_code == 0
-
-
-def test_cli_check_cache_reports_status(monkeypatch, tmp_path, capsys):
-    cache_root = tmp_path / "cache"
-    cache_root.mkdir()
-    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(cache_root))
-
-    url = "https://youtu.be/check"
-    video_dir = Path(cli._resolve_video_cache_dir(url))
-    audio_path = video_dir / "audio.wav"
-    audio_path.write_bytes(b"audio")
-
-    def fail_fetch(*_args, **_kwargs):
-        raise AssertionError("fetch_transcript should not be called")
-
-    def fail_diarization(*_args, **_kwargs):
-        raise AssertionError("perform_azure_diarization should not be called")
-
-    monkeypatch.setattr(cli, "fetch_transcript_with_metadata", fail_fetch)
-    monkeypatch.setattr(cli, "perform_azure_diarization", fail_diarization)
-
-    exit_code = cli.run(["--url", url, "--check-cache"])
-
-    assert exit_code == 0
-    output = capsys.readouterr().out
-    payload = json.loads(output)
-    assert payload["cache"]["path"] == cli._resolve_video_cache_dir(url)
-    assert payload["cache"]["audio_wav_exists"] is True
-    assert "audio.wav" in payload["cache"]["files"]
 
 
 def test_cli_can_disable_azure_streaming(monkeypatch, tmp_path):
@@ -388,7 +352,6 @@ def test_cli_can_disable_azure_streaming(monkeypatch, tmp_path):
         [
             "--url",
             "https://youtu.be/disable",
-            "--azure-diarization",
             "--force-azure-diarization",
             "--no-azure-streaming",
         ]

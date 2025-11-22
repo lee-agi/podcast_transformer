@@ -114,7 +114,7 @@ def test_generate_translation_summary_calls_azure(monkeypatch: pytest.MonkeyPatc
     user_msg = request_input[1]
     assert system_msg["role"] == "system"
     assert system_msg["content"][0]["type"] == "input_text"
-    assert system_msg["content"][0]["text"] == cli.SUMMARY_PROMPT
+    assert system_msg["content"][0]["text"] == cli._load_default_summary_prompt()
     assert user_msg["role"] == "user"
     assert user_msg["content"][0]["type"] == "input_text"
     assert "Hello world" in user_msg["content"][0]["text"]
@@ -360,6 +360,63 @@ def test_run_with_custom_summary_prompt_file(
     data = json.loads(output)
     assert data["summary"] == fake_bundle["summary_markdown"]
     assert captured_prompt["prompt"] == "自定义系统提示"
+
+
+def test_run_uses_default_summary_prompt_file_when_not_provided(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    segments = [
+        {"start": 0.0, "end": 1.0, "text": "Hi", "speaker": "Speaker"}
+    ]
+
+    monkeypatch.setenv("ANY2SUMMARY_CACHE_DIR", str(tmp_path))
+
+    default_prompt_path = tmp_path / "default_summary_prompt.txt"
+    default_prompt_text = "# 新的默认摘要 Prompt"
+    default_prompt_path.write_text(default_prompt_text, encoding="utf-8")
+    monkeypatch.setattr(cli, "DEFAULT_SUMMARY_PROMPT_PATH", default_prompt_path)
+
+    monkeypatch.setattr(
+        cli,
+        "fetch_transcript_with_metadata",
+        lambda *args, **kwargs: [dict(segment) for segment in segments],
+    )
+
+    fake_bundle = {
+        "summary_markdown": "# 标题\n内容",
+        "timeline_markdown": "# 标题\n时间线",
+        "metadata": {"title": "Demo"},
+        "total_words": 2,
+        "estimated_minutes": 1,
+        "file_base": "Demo",
+    }
+
+    captured_prompt: Dict[str, Any] = {}
+
+    def fake_generate(
+        provided_segments: Any,
+        url: str,
+        prompt: str | None = None,
+        metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        captured_prompt["prompt"] = prompt
+        return fake_bundle
+
+    monkeypatch.setattr(cli, "generate_translation_summary", fake_generate)
+
+    exit_code = cli.run(
+        [
+            "--url",
+            "https://youtu.be/testid",
+            "--azure-summary",
+        ]
+    )
+
+    assert exit_code == 0
+    capsys.readouterr()
+    assert captured_prompt["prompt"] == default_prompt_text
 
 
 def test_write_summary_documents_copies_to_default_outbox_and_adds_suffix(monkeypatch, tmp_path):

@@ -178,15 +178,12 @@ def test_cli_azure_diarization_handles_nested_payload(
     exit_code = cli.run([
         "--url",
         "https://youtu.be/nested",
-        "--azure-diarization",
     ])
 
     assert exit_code == 0
 
     output = capsys.readouterr().out
-    lines = [line for line in output.splitlines() if line.strip()]
-    assert lines, "Expected JSON payload in CLI output"
-    payload = json.loads(lines[-1])
+    payload = json.loads(output)
     assert payload[0]["text"] == "Hello"
     assert payload[0]["speaker"] == "Speaker 1"
     assert payload[1]["text"] == "World"

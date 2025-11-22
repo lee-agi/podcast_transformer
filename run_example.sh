@@ -17,6 +17,5 @@ URL="${1:-https://www.youtube.com/watch?v=exampleid}"
 "${SCRIPT_DIR}/setup_and_run.sh" \
   --url "${URL}" \
   --language en \
-  --azure-diarization \
+  --force-azure-diarization \
   --azure-summary \
-  --pretty

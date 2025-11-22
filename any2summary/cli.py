@@ -68,6 +68,9 @@ DEFAULT_OUTBOX_DIR = (
     "/Users/clzhang/Library/Mobile Documents/"
     "iCloud~md~obsidian/Documents/Obsidian Vault/010 outbox"
 )
+PROMPTS_ROOT = Path(__file__).resolve().parents[1] / "prompts"
+DEFAULT_SUMMARY_PROMPT_PATH = PROMPTS_ROOT / "summary_prompt.txt"
+DEFAULT_ARTICLE_PROMPT_PATH = PROMPTS_ROOT / "article_prompt.txt"
 
 def _getenv(*keys: str) -> Optional[str]:
     """Return the first defined environment variable among keys."""
@@ -311,11 +314,6 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         help="显示版本信息并退出。",
     )
     parser.add_argument(
-        "--azure-diarization",
-        action="store_true",
-        help="Call Azure OpenAI diarization to annotate speakers.",
-    )
-    parser.add_argument(
         "--azure-streaming",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -324,7 +322,7 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--force-azure-diarization",
         action="store_true",
-        help="即使字幕可用也强制调用 Azure 说话人分离。",
+        help="即使字幕可用也强制调用 Azure 说话人分离（文章链接不支持）。",
     )
     parser.add_argument(
         "--azure-summary",
@@ -371,16 +369,6 @@ def run(argv: Optional[Sequence[str]] = None) -> int:
         "--clean-cache",
         action="store_true",
         help="Remove cached artifacts for the provided URL before processing.",
-    )
-    parser.add_argument(
-        "--check-cache",
-        action="store_true",
-        help="Inspect cached files for the provided URL and exit.",
-    )
-    parser.add_argument(
-        "--pretty",
-        action="store_true",
-        help="Pretty print JSON output for readability.",
     )
 
     args = parser.parse_args(argv)
@@ -459,10 +447,7 @@ def _clone_args(args: argparse.Namespace, url: str) -> argparse.Namespace:
 def _run_single(args: argparse.Namespace) -> int:
     auto_force_azure = _should_force_azure_transcription(args.url)
 
-    if args.force_azure_diarization and not (args.azure_diarization or auto_force_azure):
-        raise RuntimeError(
-            "--force-azure-diarization 需要与 --azure-diarization 一起使用。"
-        )
+    force_azure = bool(args.force_azure_diarization or auto_force_azure)
 
     if args.summary_prompt_file and not args.azure_summary:
         raise RuntimeError(
@@ -478,24 +463,6 @@ def _run_single(args: argparse.Namespace) -> int:
         cache_directory = _resolve_video_cache_dir(args.url)
         if os.path.isdir(cache_directory):
             shutil.rmtree(cache_directory)
-
-    if args.check_cache:
-        cache_directory = _resolve_video_cache_dir(args.url)
-        exists = os.path.isdir(cache_directory)
-        files = sorted(os.listdir(cache_directory)) if exists else []
-        audio_path = os.path.join(cache_directory, "audio.wav")
-        payload = {
-            "cache": {
-                "path": cache_directory,
-                "exists": exists,
-                "files": files,
-                "audio_wav_exists": os.path.exists(audio_path),
-            }
-        }
-        indent = 2 if args.pretty else None
-        json.dump(payload, sys.stdout, ensure_ascii=False, indent=indent)
-        sys.stdout.write("\n")
-        return 0
 
     fallback_languages = args.fallback_languages or [args.language]
     known_speaker_pairs = _parse_known_speakers(args.known_speakers)
@@ -532,24 +499,22 @@ def _run_single(args: argparse.Namespace) -> int:
     diarization_segments: Optional[List[MutableMapping[str, float | str]]] = None
     azure_payload: Optional[MutableMapping[str, Any]] = None
 
-    should_use_azure = bool(args.azure_diarization or auto_force_azure)
+    should_use_azure = False
     if article_bundle is not None:
-        if args.force_azure_diarization:
-            raise RuntimeError("网页链接不支持 Azure 说话人分离。")
         should_use_azure = False
-
-    if should_use_azure and not args.force_azure_diarization:
-        has_known_speakers = bool(known_speaker_pairs)
-        has_known_names = bool(known_speaker_names)
-        has_speaker_constraints = (
-            args.max_speakers is not None or has_known_speakers or has_known_names
+    else:
+        transcripts_available = bool(transcript_segments)
+        has_speaker_constraints = bool(
+            args.max_speakers is not None
+            or known_speaker_pairs
+            or known_speaker_names
         )
-        if (
-            not has_speaker_constraints
-            and transcript_segments
-            and _segments_have_timestamps(transcript_segments)
-        ):
-            should_use_azure = False
+        if force_azure:
+            should_use_azure = True
+        elif not transcripts_available:
+            should_use_azure = True
+        elif has_speaker_constraints:
+            should_use_azure = True
 
     if should_use_azure:
         try:
@@ -609,7 +574,7 @@ def _run_single(args: argparse.Namespace) -> int:
         if transcript_error is not None:
             raise transcript_error
         raise RuntimeError(
-            "未能获取字幕数据。请确认视频是否启用字幕，或使用 --azure-diarization 以启用 Azure 转写。"
+            "未能获取字幕数据。请确认视频是否启用字幕，或配置 Azure OpenAI 凭据（可搭配 --force-azure-diarization 强制调用 Azure 转写）。"
         )
 
     merged_segments = merge_segments_with_speakers(
@@ -627,9 +592,11 @@ def _run_single(args: argparse.Namespace) -> int:
                     args.article_summary_prompt_file
                 )
             else:
-                custom_prompt = ARTICLE_SUMMARY_PROMPT
+                custom_prompt = _load_default_article_prompt()
         elif args.summary_prompt_file:
             custom_prompt = _load_summary_prompt_file(args.summary_prompt_file)
+        else:
+            custom_prompt = _load_default_summary_prompt()
         summary_bundle = generate_translation_summary(
             merged_segments,
             args.url,
@@ -671,10 +638,8 @@ def _run_single(args: argparse.Namespace) -> int:
             "icon_path": article_bundle.get("icon_path"),
         }
 
-    indent = 2 if args.pretty else None
-    json.dump(payload, sys.stdout, indent=indent, ensure_ascii=False)
-    if indent:
-        sys.stdout.write("\n")
+    json.dump(payload, sys.stdout, indent=2, ensure_ascii=False)
+    sys.stdout.write("\n")
 
     return 0
 
@@ -1825,6 +1790,23 @@ def _load_summary_prompt_file(path: str) -> str:
     return content
 
 
+def _load_prompt_with_fallback(path: Path | str, fallback: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return fallback
+
+
+def _load_default_summary_prompt() -> str:
+    return _load_prompt_with_fallback(DEFAULT_SUMMARY_PROMPT_PATH, SUMMARY_PROMPT)
+
+
+def _load_default_article_prompt() -> str:
+    return _load_prompt_with_fallback(
+        DEFAULT_ARTICLE_PROMPT_PATH, ARTICLE_SUMMARY_PROMPT
+    )
+
+
 def generate_translation_summary(
     segments: Sequence[MutableMapping[str, Any]],
     video_url: str,
@@ -1845,7 +1827,7 @@ def generate_translation_summary(
 
     deployment = os.getenv("AZURE_OPENAI_SUMMARY_DEPLOYMENT") or "llab-gpt-5-pro"
 
-    instruction = prompt or SUMMARY_PROMPT
+    instruction = prompt or _load_default_summary_prompt()
     timeline = _format_segments_for_summary(segments)
     user_message = "原始 ASR 片段如下：\n" + timeline
 

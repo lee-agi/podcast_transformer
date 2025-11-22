@@ -41,7 +41,7 @@ if [ -f "${PROJECT_ROOT}/requirements.txt" ]; then
   python -m pip install -r "${PROJECT_ROOT}/requirements.txt"
 fi
 
-if printf '%s\n' "$@" | grep -F -q -- "--azure-diarization"; then
+if printf '%s\n' "$@" | grep -E -q -- "--force-azure-diarization|--azure-summary"; then
   if [ -z "${AZURE_OPENAI_API_KEY:-}" ] || [ -z "${AZURE_OPENAI_ENDPOINT:-}" ]; then
     echo "[error] AZURE_OPENAI_API_KEY 或 AZURE_OPENAI_ENDPOINT 未设置。" >&2
     exit 1
